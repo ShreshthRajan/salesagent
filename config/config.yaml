@@ -1,0 +1,25 @@
+api:
+  apollo:
+    base_url: "https://api.apollo.io/v1"
+    rate_limit: 100  # requests per minute
+  rocketreach:
+    base_url: "https://api.rocketreach.co/v2"
+    rate_limit: 50
+  openai:
+    base_url: "https://api.openai.com/v1"
+    rate_limit: 50
+    model: "gpt-4-1106-preview"
+    temperature: 0.1
+
+browser:
+  max_concurrent: 5
+  timeout: 30000  # ms
+  retry_attempts: 3
+
+proxies:
+  rotation_interval: 300  # seconds
+  max_failures: 3
+
+logging:
+  level: "INFO"
+  format: "json"
