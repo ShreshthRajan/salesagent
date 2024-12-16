@@ -22,7 +22,40 @@ class BrowserPool:
         self.contexts: Dict[str, List[BrowserContext]] = {}
         self.semaphore = asyncio.Semaphore(self.config.browser.max_concurrent)
         self._playwright = None
+        self.use_proxy = True 
 
+    async def _create_context(self, browser_id: str) -> BrowserContext:
+        """Create a new browser context with optional proxy"""
+        try:
+            proxy_config = None
+            if self.use_proxy:  # Add this condition
+                proxy = self.proxy_manager.get_proxy()
+                if proxy:
+                    proxy_config = {
+                        "server": f"socks5://{proxy.host}:{proxy.port}",
+                        "username": proxy.username,
+                        "password": proxy.password
+                    } if proxy.username and proxy.password else {
+                        "server": f"socks5://{proxy.host}:{proxy.port}"
+                    }
+
+            context = await self.browsers[browser_id].new_context(
+                proxy=proxy_config,
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            )
+
+            self.contexts[browser_id].append(context)
+            return context
+
+        except Exception as e:
+            if self.use_proxy and proxy:
+                self.proxy_manager.mark_failed(proxy)
+            raise ProxyConnectionError(
+                proxy.host if proxy else "No proxy", 
+                f"Failed to create context: {str(e)}"
+            )
+        
     async def initialize(self):
         """Initialize the browser pool"""
         try:

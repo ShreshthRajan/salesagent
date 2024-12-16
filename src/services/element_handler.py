@@ -18,12 +18,17 @@ class ElementHandler:
         self.timeout = self.config.browser.timeout
 
     async def click(self, selector: str, timeout: Optional[int] = None) -> None:
-        """Click an element with retries"""
+        """Click an element"""
         try:
-            await self.page.click(
+            # Wait for element to be ready before clicking
+            await self.page.wait_for_selector(
                 selector,
                 timeout=timeout or self.timeout,
-                retry_intervals=[100, 250, 500]  # Progressive retry intervals
+                state="visible"
+            )
+            await self.page.click(
+                selector,
+                timeout=timeout or self.timeout
             )
             logger.debug(f"Clicked element: {selector}")
         except PlaywrightTimeoutError:
@@ -51,13 +56,10 @@ class ElementHandler:
                 raise ElementNotFoundException(selector)
             return element
         except PlaywrightTimeoutError:
-            raise TimeoutError(
-                "wait_for_element",
-                timeout or self.timeout,
-                f"Timeout waiting for element: {selector}"
+            raise ElementNotFoundException(  # Change to ElementNotFoundException
+                selector,
+                f"Element not found after timeout: {timeout or self.timeout}ms"
             )
-        except Exception as e:
-            raise ElementNotFoundException(selector, str(e))
 
     async def get_text(self, selector: str) -> str:
         """Get text content of an element"""
