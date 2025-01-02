@@ -5,10 +5,32 @@ from src.utils.exceptions import SalesAgentException
 import logging
 import sys
 
+# Set up logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+async def validate_setup():
+    """Validate environment and API keys"""
+    try:
+        config_manager = ConfigManager()
+        await config_manager.validate_api_keys()
+        return True
+    except Exception as e:
+        logger.error(f"Setup validation failed: {str(e)}")
+        return False
+
 async def main():
     try:
         # Setup logging
         logger = setup_logging()
+        
+        # First validate API keys
+        if not await validate_setup():
+            logger.error("API key validation failed. Please check your credentials.")
+            sys.exit(1)
 
         # Load and validate config
         config_manager = ConfigManager()

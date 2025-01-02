@@ -8,10 +8,35 @@ class BaseAgent(ABC):
     """Base agent for all data source agents"""
     
     TARGET_TITLES = [
-        "CFO", "Chief Financial Officer",
+        # C-Level
         "CEO", "Chief Executive Officer",
-        "Head of Finance", "Finance Director",
-        "VP of Finance", "Finance Lead"
+        "CFO", "Chief Financial Officer",
+        "President",
+        
+        # VP Level Finance
+        "SVP, CFO", "EVP, CFO",
+        "VP Finance", "VP, Finance",
+        "VP Treasury", "VP, Treasury",
+        "VP Financial", "VP, Financial",
+        "Vice President Finance",
+        "Vice President, Finance",
+        "VP Finance and Corporate Controller",
+        "VP, Treasurer",
+        "VP, Treasury and Finance",
+        
+        # Director Level
+        "Director of Finance",
+        "Director of Accounting",
+        "Financial Director",
+        "Head of Finance",
+        "Head of Financial",
+        
+        # Other Finance Titles
+        "Controller",
+        "Corporate Controller",
+        "Treasurer",
+        "Head of FP&A",
+        "Financial Controller"
     ]
 
     @abstractmethod

@@ -1,6 +1,6 @@
 api:
   apollo:
-    base_url: "https://api.apollo.io/v1"
+    base_url: "https://api.apollo.io/api/v1"
     rate_limit: 100  # requests per minute
   rocketreach:
     base_url: "https://api.rocketreach.co/v2"
