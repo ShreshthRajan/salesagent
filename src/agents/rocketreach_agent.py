@@ -1,134 +1,162 @@
 # src/agents/rocketreach_agent.py
-from typing import Optional, Dict, Any
 import logging
-from .base_agent import BaseAgent
-from src.utils.config import ConfigManager
 import aiohttp
 import asyncio
+from typing import Optional, Dict, Any, List
+
+from src.agents.base_agent import BaseAgent
+from src.utils.config import ConfigManager
 
 logger = logging.getLogger(__name__)
 
-def truncate_json(data, max_len=600):
-    text = str(data)
-    if len(text) > max_len:
-        return text[:max_len] + "...(truncated)..."
-    return text
-
 class RocketReachAgent(BaseAgent):
-    """RocketReach agent implementation"""
-    
+    """RocketReach agent implementing the base abstract methods + a custom process_company for up to 10 folks."""
+
     def __init__(self):
         self.config = ConfigManager().config.api.rocketreach
         self.headers = {
             "Content-Type": "application/json",
             "Api-Key": self.config.api_key
         }
-        # Minimal test titles
-        self.TEST_TITLES = [
-            "Chief Financial Officer",
-            "CFO"
-        ]
 
-    async def find_company_person(self, company_name: str) -> Optional[Dict[str, Any]]:
+    # ========== Abstract #1 ==========
+    async def find_company_person(self, company_name: str) -> Optional[Dict[str,Any]]:
         """
-        1) POST /v2/api/search with minimal titles
-        2) Return first match
-        3) Sleep 5s between each attempt to reduce 429s
+        Minimal version to get the SINGLE first match from a search. 
+        We'll limit to 1 person in search => returns it or None.
         """
-        logger.info(f"[RocketReach] Searching for '{company_name}' with {len(self.TEST_TITLES)} title(s).")
         url = f"{self.config.base_url}/api/search"
+        body = {
+            "start": 1,
+            "page_size": 1,
+            "query": {
+                "current_employer": [company_name],
+            }
+        }
+        profiles = await self._post_with_retry(url, body)
+        if not profiles:
+            return None
+        return profiles[0]
 
-        async with aiohttp.ClientSession() as session:
-            for title in self.TEST_TITLES:
-                body = {
-                    "start": 1,
-                    "page_size": 1,
-                    "query": {
-                        "current_employer": [company_name],
-                        "current_title": [title]
-                    }
-                }
-                logger.debug(f"[RocketReach] POST {url} => {body}")
-                resp = await session.post(url, headers=self.headers, json=body)
-                
-                logger.debug(f"[RocketReach] Search status for title='{title}': {resp.status}")
-                if resp.status == 429:
-                    logger.warning("[RocketReach] Rate-limited (429). Stopping search.")
-                    await resp.text()  # read content to close properly
-                    return None
-                elif resp.status != 201:
-                    logger.warning(f"[RocketReach] '{company_name}' + '{title}' => status {resp.status}")
-                    await resp.text()  # read content to close
-                    # Then sleep to avoid hitting rate-limit again
-                    logger.info("[RocketReach] Sleeping 5s to reduce chance of 429...")
-                    await asyncio.sleep(5)
-                    continue
+    # ========== Abstract #2 ==========
+    async def get_email(self, person_data: Dict[str,Any]) -> Optional[str]:
+        """Use GET /v2/person/lookup?id=xxx => single email or None."""
+        pid = person_data.get("id")
+        if not pid:
+            return None
+        return await self._lookup_email(pid)
 
-                data = await resp.json()
-                logger.debug(f"[RocketReach] Response data => {truncate_json(data)}")
-
-                if not isinstance(data, list) or len(data) == 0:
-                    logger.info(f"[RocketReach] No profiles for title='{title}' with '{company_name}'")
-                    # Sleep
-                    logger.info("[RocketReach] Sleeping 5s to reduce chance of 429...")
-                    await asyncio.sleep(5)
-                    continue
-
-                # Found a list of profiles
-                profile = data[0]
-                p_id = profile.get("id")
-                p_name = profile.get("name", "")
-                p_title = profile.get("current_title", "")
-                p_employer = profile.get("current_employer", "")
-
-                if not p_id:
-                    logger.info(f"[RocketReach] No 'id' in profile for title='{title}'")
-                    logger.info("[RocketReach] Sleeping 5s to reduce chance of 429...")
-                    await asyncio.sleep(5)
-                    continue
-
-                # Basic check for employer name
-                if company_name.lower() not in p_employer.lower():
-                    logger.info(f"[RocketReach] Skipping mismatch employer '{p_employer}'.")
-                    logger.info("[RocketReach] Sleeping 5s to reduce chance of 429...")
-                    await asyncio.sleep(5)
-                    continue
-
-                logger.info(f"[RocketReach] Found => Name='{p_name}', Title='{p_title}'")
-                # Sleep here before returning (optional)
-                return {
-                    "id": p_id,
-                    "name": p_name,
-                    "title": p_title,
-                    "company": company_name
-                }
-
-            # If we exit the for-loop, no match
-            logger.info(f"[RocketReach] No matching titles found for '{company_name}'")
+    # ========== Override for up to 10 employees (any titles) ========== 
+    async def process_company(self, company_name: str) -> Optional[Dict[str,Any]]:
+        """
+        We want up to 10 employees, ignoring titles, + their emails.
+        We can do "start=1, page_size=10, query: { 'current_employer': [company_name] }"
+        Then do person/lookup for each => gather email. 
+        Return { people: [...], emails: [...] } or None
+        """
+        url = f"{self.config.base_url}/api/search"
+        body = {
+            "start": 1,
+            "page_size": 10,
+            "query": {
+                "current_employer": [company_name]
+            }
+        }
+        profiles = await self._post_with_retry(url, body)
+        if not profiles:
             return None
 
-    async def get_email(self, person_data: Dict[str, Any]) -> Optional[str]:
-        """GET /v2/person/lookup?id=xxx => retrieve email(s)."""
-        logger.info(f"[RocketReach] Getting email for ID={person_data['id']}")
-        lookup_url = f"{self.config.base_url}/person/lookup"
-        params = {"id": person_data["id"]}
+        # Now get emails
+        final_people = []
+        final_emails = []
+        for prof in profiles:
+            pid = prof.get("id")
+            if not pid:
+                continue
+            e = await self._lookup_email(pid)
+            person_info = {
+                "name": prof.get("name",""),
+                "title": prof.get("current_title",""),
+                "email": e
+            }
+            final_people.append(person_info)
+            if e:
+                final_emails.append(e)
 
+        if not final_emails:
+            return None
+        return {
+            "people": final_people,
+            "emails": final_emails
+        }
+
+    # ========== Internal helpers ==========
+
+    async def _post_with_retry(self, url: str, json_body: Dict[str,Any]) -> Optional[List[Dict[str,Any]]]:
+        """
+        Helper for RocketReach POST => parse 429, sleep + retry once.
+        If success => return list of profiles, else None.
+        """
         async with aiohttp.ClientSession() as session:
-            resp = await session.get(lookup_url, headers=self.headers, params=params)
-            logger.debug(f"[RocketReach] Email lookup => status {resp.status}")
+            resp = await session.post(url, headers=self.headers, json=json_body)
+            if resp.status == 429:
+                # parse Retry-After
+                retry_secs = float(resp.headers.get("Retry-After","5"))
+                logger.warning(f"[RocketReach] 429 => sleeping {retry_secs}s, then retry")
+                await asyncio.sleep(retry_secs)
 
-            if resp.status != 200:
-                logger.warning(f"[RocketReach] Email lookup failed: {resp.status}")
+                resp2 = await session.post(url, headers=self.headers, json=json_body)
+                if resp2.status == 429:
+                    logger.error("[RocketReach] Still 429 after retry => aborting.")
+                    await resp2.text()
+                    return None
+                if resp2.status != 201:
+                    logger.warning(f"[RocketReach] post_with_retry => status={resp2.status} after backoff.")
+                    await resp2.text()
+                    return None
+                data2 = await resp2.json()
+                if not isinstance(data2, list) or len(data2)==0:
+                    return None
+                return data2
+            elif resp.status != 201:
+                logger.warning(f"[RocketReach] post_with_retry => status={resp.status} (no 429).")
                 await resp.text()
                 return None
 
             data = await resp.json()
-            logger.debug(f"[RocketReach] Lookup response => {truncate_json(data)}")
+            if not isinstance(data, list) or not data:
+                return None
+            return data
 
-            emails = data.get("emails") or []
-            if emails:
-                logger.info(f"[RocketReach] Found email => {emails[0]}")
-                return emails[0]
+    async def _lookup_email(self, person_id: str) -> Optional[str]:
+        """
+        GET /v2/person/lookup?id=xxx with a single 429 retry
+        """
+        lookup_url = f"{self.config.base_url}/person/lookup"
+        params = {"id": person_id}
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get(lookup_url, headers=self.headers, params=params)
+            if resp.status == 429:
+                secs = float(resp.headers.get("Retry-After","5"))
+                logger.warning(f"[RocketReach] 429 on lookup => sleeping {secs}s")
+                await asyncio.sleep(secs)
+                resp2 = await session.get(lookup_url, headers=self.headers, params=params)
+                if resp2.status == 429:
+                    logger.error("[RocketReach] Still 429 after second attempt => abort.")
+                    await resp2.text()
+                    return None
+                if resp2.status != 200:
+                    logger.warning(f"[RocketReach] _lookup_email => {resp2.status} after backoff")
+                    await resp2.text()
+                    return None
+                d2 = await resp2.json()
+                emails2 = d2.get("emails",[])
+                return emails2[0] if emails2 else None
+            elif resp.status != 200:
+                logger.warning(f"[RocketReach] _lookup_email => {resp.status}")
+                await resp.text()
+                return None
 
-            logger.info("[RocketReach] No email returned in lookup response")
-            return None
+            data = await resp.json()
+            emails = data.get("emails",[])
+            return emails[0] if emails else None

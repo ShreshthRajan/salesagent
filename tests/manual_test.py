@@ -3,17 +3,16 @@ import asyncio
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+
 from src.agents.apollo_agent import ApolloAgent
 from src.agents.rocketreach_agent import RocketReachAgent
 
-# Set up less-detailed logging by default
 logging.basicConfig(
-    level=logging.INFO,  # <--- changed to INFO from DEBUG
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
 current_dir = Path(__file__).parent.parent
 env_path = current_dir / '.env'
 load_dotenv(env_path)
@@ -27,104 +26,93 @@ TEST_COMPANIES = [
 ]
 
 async def try_single_search(agent, company_name: str, service_name: str):
-    """Try a single search with moderate logging."""
-    logger.info(f"{service_name}: Searching for '{company_name}'...")
+    logger.info(f"{service_name}: Searching for '{company_name}' using process_company...")
     try:
         result = await agent.process_company(company_name)
-        
         if result:
-            logger.info(f"  => {service_name} SUCCESS! Found:")
-            logger.info(f"     Person Name: {result['name']}")
-            logger.info(f"     Title: {result['title']}")
-            logger.info(f"     Email: {result['email']}")
+            # result is { 'people': [...], 'emails': [...] } or None
+            people = result.get("people", [])
+            emails = result.get("emails", [])
+
+            logger.info(f" => {service_name} Found {len(people)} person(s)")
+            for i, p in enumerate(people, start=1):
+                logger.info(f"    [{i}] {p['name']} - {p['title']} (email={p['email']})")
+
+            logger.info(f" => Gathered {len(emails)} email(s): {emails}")
             return result
         else:
-            logger.info(f"  => {service_name}: No final result for '{company_name}'")
+            logger.info(f" => {service_name} No result for '{company_name}'")
             return None
     except Exception as e:
-        logger.error(f"{service_name} ERROR for {company_name}: {e}")
+        logger.error(f"{service_name} ERROR for {company_name}: {str(e)}")
         return None
 
 async def try_company_name(name: str, apollo_agent: ApolloAgent, rocketreach_agent: RocketReachAgent):
-    """Try both services for a single company name"""
     logger.info(f"\nTrying company name: {name} ...")
 
-    # Try Apollo first
-    result = await try_single_search(apollo_agent, name, "Apollo")
-    if result:
-        return result
+    # 1) Apollo
+    a_res = await try_single_search(apollo_agent, name, "Apollo")
+    if a_res and a_res.get("people"):
+        return a_res
 
-    # Then try RocketReach
-    result = await try_single_search(rocketreach_agent, name, "RocketReach")
-    if result:
-        return result
+    # 2) RocketReach
+    r_res = await try_single_search(rocketreach_agent, name, "RocketReach")
+    if r_res and r_res.get("people"):
+        return r_res
 
     return None
 
 async def test_company(company_data: dict):
-    """Test a single company with all its variations"""
-    company_name = company_data["name"]
-    company_website = company_data["website"]
-    alternates = company_data.get("alternates", [])
+    name = company_data["name"]
+    website = company_data["website"]
+    alts = company_data.get("alternates",[])
 
     logger.info(f"\n{'='*50}")
-    logger.info(f"Testing company: {company_name}")
-    logger.info(f"Website: {company_website}")
-    logger.info(f"Alternate names: {alternates}")
+    logger.info(f"Testing company: {name}")
+    logger.info(f"Website: {website}")
+    logger.info(f"Alternate names: {alts}")
     logger.info(f"{'='*50}\n")
 
-    # Initialize agents
-    apollo_agent = ApolloAgent()
-    rocketreach_agent = RocketReachAgent()
+    a_agent = ApolloAgent()
+    r_agent = RocketReachAgent()
 
-    # Main name
-    result = await try_company_name(company_name, apollo_agent, rocketreach_agent)
-    if result:
-        return result
+    res = await try_company_name(name, a_agent, r_agent)
+    if res:
+        return res
 
-    # Try alternates
-    for alt_name in alternates:
-        logger.info(f"\nTrying alternate name: {alt_name}")
-        result = await try_company_name(alt_name, apollo_agent, rocketreach_agent)
-        if result:
-            return result
+    for alt in alts:
+        logger.info(f"\nTrying alternate name: {alt} ...")
+        alt_res = await try_company_name(alt, a_agent, r_agent)
+        if alt_res:
+            return alt_res
 
-    logger.info(f"\nNo results found for any variation of {company_name}")
+    logger.info(f"\nNo results found for any variation of {name}")
     return None
 
 async def main():
-    results = {}
-    successful_searches = []
-    failed_searches = []
-
-    # Test each company
-    for company in TEST_COMPANIES:
-        result = await test_company(company)
-        results[company["name"]] = result
-        
-        if result:
-            successful_searches.append((company["name"], result))
+    success = []
+    fails = []
+    for comp in TEST_COMPANIES:
+        out = await test_company(comp)
+        if out:
+            success.append(comp["name"])
         else:
-            failed_searches.append(company["name"])
+            fails.append(comp["name"])
 
-    # Summary
     logger.info("\n" + "="*50)
     logger.info("SEARCH RESULTS SUMMARY")
     logger.info("="*50)
     
-    logger.info(f"\nSuccessful searches ({len(successful_searches)}/{len(TEST_COMPANIES)}):")
-    for (company_name, r) in successful_searches:
-        logger.info(f" ✓ {company_name}")
-        logger.info(f"    - Found: {r['name']}")
-        logger.info(f"    - Title: {r['title']}")
-        logger.info(f"    - Email: {r['email']}")
+    logger.info(f"\nSuccessful: {len(success)}/{len(TEST_COMPANIES)}")
+    for s in success:
+        logger.info(f"  ✓ {s}")
 
-    logger.info(f"\nFailed searches ({len(failed_searches)}/{len(TEST_COMPANIES)}):")
-    for company_name in failed_searches:
-        logger.info(f" ✗ {company_name}")
+    logger.info(f"\nFailed: {len(fails)}/{len(TEST_COMPANIES)}")
+    for f in fails:
+        logger.info(f"  ✗ {f}")
 
-    success_rate = (len(successful_searches) / len(TEST_COMPANIES)) * 100
-    logger.info(f"\nOverall success rate: {success_rate:.1f}%")
+    sr = (len(success)/len(TEST_COMPANIES))*100
+    logger.info(f"\nOverall success rate: {sr:.1f}%")
 
 if __name__ == "__main__":
     asyncio.run(main())
