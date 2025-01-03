@@ -1,3 +1,4 @@
+# tests/manual_test.py
 import asyncio
 import logging
 from pathlib import Path
@@ -25,54 +26,57 @@ TEST_COMPANIES = [
     }
 ]
 
-async def try_single_search(agent, company_name: str, service_name: str):
-    """Try a single search with detailed logging"""
-    try:
-        logger.debug(f"{service_name}: Attempting search for '{company_name}'")
-        result = await agent.process_company(company_name)
-        
-        if result:
-            logger.info(f"{service_name} SUCCESS for {company_name}:")
-            logger.info(f"  Name: {result['name']}")
-            logger.info(f"  Title: {result['title']}")
-            logger.info(f"  Email: {result['email']}")
-            return result
-        else:
-            logger.debug(f"{service_name}: No results for '{company_name}'")
-            return None
-            
-    except Exception as e:
-        logger.error(f"{service_name} ERROR for {company_name}: {str(e)}")
-        return None
-
-async def try_company_name(name: str, apollo_agent: ApolloAgent, rocketreach_agent: RocketReachAgent):
-    """Try both services for a single company name"""
-    logger.info(f"\nTrying company name: {name}")
+async def process_company(company_data: dict, apollo_agent: ApolloAgent, rocketreach_agent: RocketReachAgent):
+    """Process a company through both agents following decision tree"""
+    company_name = company_data["name"]
+    logger.info(f"\nProcessing company: {company_name}")
     
-    # Try Apollo
+    # Step 1: Try Apollo
     logger.info("Attempting Apollo search...")
-    result = await try_single_search(apollo_agent, name, "Apollo")
-    if result:
-        return result
-
-    # Try RocketReach
-    logger.info("Attempting RocketReach search...")
-    result = await try_single_search(rocketreach_agent, name, "RocketReach")
-    if result:
-        return result
-
+    apollo_agent.set_domain(company_data["website"])
+    apollo_result = await apollo_agent.process_company(company_name)
+    
+    found_people = []
+    
+    if apollo_result:
+        # Add Apollo's found people
+        logger.debug(f"Apollo returned: {apollo_result}")
+        found_people.extend(apollo_result.get("found_people", []))
+        
+        # Try RocketReach for pending people
+        pending_people = apollo_result.get("pending_people", [])
+        if pending_people:
+            logger.info(f"Attempting RocketReach for {len(pending_people)} pending Apollo people...")
+            rr_result = await rocketreach_agent.process_company(company_name, pending_people)
+            if rr_result:
+                logger.debug(f"RocketReach returned for pending: {rr_result}")
+                found_people.extend(rr_result.get("found_people", []))
+    
+    # If still no results, try RocketReach fresh search
+    if not found_people:
+        logger.info("Attempting fresh RocketReach search...")
+        rr_result = await rocketreach_agent.process_company(company_name)
+        if rr_result:
+            logger.debug(f"RocketReach returned for fresh search: {rr_result}")
+            found_people.extend(rr_result.get("found_people", []))
+    
+    if found_people:
+        logger.info(f"Found {len(found_people)} total people with emails")
+        return {
+            "company": company_name,
+            "website": company_data["website"],
+            "people": found_people
+        }
+    
+    logger.info("No results found")
     return None
 
 async def test_company(company_data: dict):
     """Test a single company with all its variations"""
-    company_name = company_data["name"]
-    company_website = company_data["website"]
-    alternates = company_data.get("alternates", [])
-
     logger.info(f"\n{'='*50}")
-    logger.info(f"Testing company: {company_name}")
-    logger.info(f"Website: {company_website}")
-    logger.info(f"Alternate names: {alternates}")
+    logger.info(f"Testing company: {company_data['name']}")
+    logger.info(f"Website: {company_data['website']}")
+    logger.info(f"Alternate names: {company_data.get('alternates', [])}")
     logger.info(f"{'='*50}")
 
     # Initialize agents
@@ -80,54 +84,57 @@ async def test_company(company_data: dict):
     rocketreach_agent = RocketReachAgent()
 
     # Try main name
-    result = await try_company_name(company_name, apollo_agent, rocketreach_agent)
+    result = await process_company(company_data, apollo_agent, rocketreach_agent)
     if result:
         return result
 
     # Try alternates
-    for alt_name in alternates:
+    for alt_name in company_data.get("alternates", []):
+        alt_data = company_data.copy()
+        alt_data["name"] = alt_name
         logger.info(f"\nTrying alternate name: {alt_name}")
-        result = await try_company_name(alt_name, apollo_agent, rocketreach_agent)
+        result = await process_company(alt_data, apollo_agent, rocketreach_agent)
         if result:
             return result
 
-    logger.info(f"\nNo results found for any variation of {company_name}")
+    logger.info(f"\nNo results found for any variation of {company_data['name']}")
     return None
 
 async def main():
+    """Main test function"""
     try:
-        results = {}
-        successful_searches = []
-        failed_searches = []
+        results = []
+        failed_companies = []
 
         # Test each company
         for company in TEST_COMPANIES:
             result = await test_company(company)
-            results[company["name"]] = result
-            
             if result:
-                successful_searches.append((company["name"], result))
+                results.append(result)
             else:
-                failed_searches.append(company["name"])
+                failed_companies.append(company["name"])
 
-        # Print detailed summary
+        # Print results summary
         logger.info("\n" + "="*50)
         logger.info("SEARCH RESULTS SUMMARY")
         logger.info("="*50)
         
-        logger.info(f"\nSuccessful searches ({len(successful_searches)}/{len(TEST_COMPANIES)}):")
-        for company_name, result in successful_searches:
-            logger.info(f"✓ {company_name}")
-            logger.info(f"  - Found: {result['name']}")
-            logger.info(f"  - Title: {result['title']}")
-            logger.info(f"  - Email: {result['email']}")
-
-        logger.info(f"\nFailed searches ({len(failed_searches)}/{len(TEST_COMPANIES)}):")
-        for company_name in failed_searches:
-            logger.info(f"✗ {company_name}")
+        if results:
+            logger.info(f"\nSuccessful searches ({len(results)}/{len(TEST_COMPANIES)}):")
+            for result in results:
+                logger.info(f"\n✓ {result['company']} ({result['website']})")
+                for person in result["people"]:
+                    logger.info(f"  - {person['name']}")
+                    logger.info(f"    Title: {person['title']}")
+                    logger.info(f"    Email: {person['email']}")
+        
+        if failed_companies:
+            logger.info(f"\nFailed searches ({len(failed_companies)}/{len(TEST_COMPANIES)}):")
+            for company in failed_companies:
+                logger.info(f"✗ {company}")
 
         # Print success rate
-        success_rate = (len(successful_searches) / len(TEST_COMPANIES)) * 100
+        success_rate = (len(results) / len(TEST_COMPANIES)) * 100
         logger.info(f"\nOverall success rate: {success_rate:.1f}%")
 
     except Exception as e:
@@ -137,7 +144,7 @@ async def main():
         logger.info("Required environment variables:")
         logger.info("- APOLLO_API_KEY")
         logger.info("- ROCKETREACH_API_KEY")
-        logger.info("- OPENAI_API_KEY")
+        raise  # Re-raise the exception to see the full stack trace
 
 if __name__ == "__main__":
     asyncio.run(main())
