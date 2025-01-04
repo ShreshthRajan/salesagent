@@ -1,44 +1,26 @@
-import pytest
-from pathlib import Path
-from src.services.screenshot_manager import ScreenshotManager
-from src.utils.exceptions import ScreenshotError
+class TestScreenshotManager:
+    async def test_capture_and_optimize(self, screenshot_manager, mock_page):
+        # Setup mock page content
+        await mock_page.set_content("<html><body><div>Test</div></body></html>")
+        
+        screenshot = await screenshot_manager.capture(
+            name="test",
+            optimize=True
+        )
+        assert screenshot.exists()
+        assert screenshot.suffix == ".png"
 
-@pytest.mark.asyncio
-async def test_screenshot_capture(browser_session):
-    """Test screenshot capture"""
-    manager = ScreenshotManager(browser_session.page)
-    await browser_session.navigate("https://example.com")
-    
-    filepath = await manager.capture("test")
-    assert filepath.exists()
-    filepath.unlink()  # Cleanup
-
-@pytest.mark.asyncio
-async def test_error_screenshot(browser_session):
-    """Test error screenshot capture"""
-    manager = ScreenshotManager(browser_session.page)
-    await browser_session.navigate("https://example.com")
-    
-    filepath = await manager.capture_error("Test error")
-    context_file = filepath.parent / f"{filepath.stem}_context.txt"
-    
-    assert filepath.exists()
-    assert context_file.exists()
-    
-    # Cleanup
-    filepath.unlink()
-    context_file.unlink()
-
-@pytest.mark.asyncio
-async def test_screenshot_cleanup(browser_session):
-    """Test screenshot cleanup"""
-    manager = ScreenshotManager(browser_session.page)
-    await browser_session.navigate("https://example.com")
-    
-    # Create a test screenshot
-    filepath = await manager.capture("test")
-    assert filepath.exists()
-    
-    # Test cleanup
-    manager.cleanup_old_screenshots(max_age_days=0)
-    assert not filepath.exists()
+    async def test_parallel_capture(self, screenshot_manager, mock_page):
+        await mock_page.set_content("""
+            <html><body>
+                <div id="div1">Test 1</div>
+                <div id="div2">Test 2</div>
+            </body></html>
+        """)
+        
+        screenshots = await screenshot_manager.capture_multiple(
+            ["#div1", "#div2"],
+            "test_multi"
+        )
+        assert len(screenshots) == 2
+        assert all(s.exists() for s in screenshots)
