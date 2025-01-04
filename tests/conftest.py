@@ -1,59 +1,66 @@
-import pytest_asyncio
-import os
-from dotenv import load_dotenv
-from src.services.browser_manager import BrowserPool
-from src.services.browser_context import BrowserSession
-from src.utils.config import ConfigManager
-import logging
 import pytest
+import asyncio
+from pathlib import Path
+from playwright.async_api import async_playwright
+from unittest.mock import MagicMock
+from src.services.vision_service import VisionService
+from src.services.action_parser import ActionParser
+from src.services.navigation_state import NavigationStateMachine
+from src.services.validation_service import ValidationService
+from src.services.screenshot_manager import ScreenshotManager
+from src.services.integration_manager import IntegrationManager
 
-logger = logging.getLogger(__name__)
+@pytest.fixture(scope="session")
+def event_loop():
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
 
-# Load environment variables at the start of testing
-load_dotenv()
+@pytest.fixture
+async def browser_context():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        context = await browser.new_context()
+        yield context
+        await context.close()
+        await browser.close()
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def setup_test_env():
-    """Load environment and config, but do NOT raise if a key is invalid."""
-    manager = ConfigManager()
-    try:
-        # Just load config & set up env
-        await manager.initialize()
-    except Exception as e:
-        logger.warning(f"Something went wrong, but continuing: {e}")
-    # Do not raise or skip
-    return manager
+@pytest.fixture
+async def mock_page(browser_context):
+    page = await browser_context.new_page()
+    yield page
+    await page.close()
 
-@pytest_asyncio.fixture
-async def config_manager():
-    """Fixture that returns the manager object, 
-       but does *not* forcibly validate Apollo & RR every time."""
-    manager = ConfigManager()
-    await manager.initialize()
-    return manager
+@pytest.fixture
+def screenshot_manager(mock_page):
+    return ScreenshotManager(mock_page)
 
+@pytest.fixture
+def vision_service():
+    service = VisionService()
+    service.api_key = "test_key"
+    return service
 
-@pytest_asyncio.fixture(scope="function")
-async def browser_pool():
-    """Provides initialized browser pool for testing"""
-    pool = BrowserPool()
-    # Disable proxy warnings for tests
-    pool.proxy_manager.get_proxy = lambda: None  # Mock the get_proxy method
-    await pool.initialize()
-    pool.use_proxy = False
-    yield pool
-    await pool.cleanup()
+@pytest.fixture
+def action_parser():
+    return ActionParser()
 
-@pytest_asyncio.fixture(scope="function")
-async def browser_context(browser_pool):
-    """Provides browser context"""
-    context = await browser_pool.get_context()
-    yield context
-    await browser_pool.cleanup_context(context)
+@pytest.fixture
+def navigation_state():
+    return NavigationStateMachine()
 
-@pytest_asyncio.fixture(scope="function")
-async def browser_session(browser_context):
-    """Provides browser session"""
-    session = BrowserSession(browser_context)
-    async with session as s:
-        yield s
+@pytest.fixture
+def validation_service():
+    return ValidationService()
+
+@pytest.fixture
+def integration_manager(mock_page, vision_service, action_parser, navigation_state, 
+                       validation_service, screenshot_manager):
+    return IntegrationManager(
+        mock_page,
+        vision_service,
+        action_parser,
+        navigation_state,
+        validation_service,
+        screenshot_manager
+    )
