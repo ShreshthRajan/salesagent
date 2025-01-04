@@ -9,6 +9,9 @@ from src.services.navigation_state import NavigationStateMachine
 from src.services.validation_service import ValidationService
 from src.services.screenshot_manager import ScreenshotManager
 from src.services.integration_manager import IntegrationManager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 @pytest.fixture(scope="session")
 def event_loop():

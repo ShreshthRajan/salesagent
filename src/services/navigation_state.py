@@ -8,6 +8,7 @@ import aiofiles
 from datetime import datetime
 import asyncio
 from src.utils.exceptions import NavigationError
+from pathlib import Path 
 
 logger = logging.getLogger(__name__)
 

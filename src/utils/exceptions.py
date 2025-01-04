@@ -73,3 +73,43 @@ class TimeoutError(BrowserException):
         self.timeout = timeout
         self.message = message or f"Operation '{operation}' timed out after {timeout}ms"
         super().__init__(self.message)
+
+class VisionAPIError(Exception):
+    """Raised when there are issues with the Vision API service"""
+    def __init__(self, message: str = None):
+        self.message = message or "Vision API operation failed"
+        super().__init__(self.message)
+        
+class BrowserException(Exception):
+    """Base exception class for browser-related errors"""
+    def __init__(self, message: str = None):
+        self.message = message or "Browser operation failed"
+        super().__init__(self.message)
+
+class InvalidActionError(BrowserException):
+    """Raised when an action is invalid or cannot be parsed"""
+    def __init__(self, action: dict, message: str = None):
+        self.action = action
+        self.message = message or f"Invalid action: {action}"
+        super().__init__(self.message)
+
+class ValidationError(Exception):
+    """Raised when validation fails"""
+    def __init__(self, field: str, message: str = None):
+        self.field = field
+        self.message = message or f"Validation failed for field: {field}"
+        super().__init__(self.message)
+
+class IntegrationError(Exception):
+    """Raised when there are issues with external service integration"""
+    def __init__(self, service: str, message: str = None):
+        self.service = service
+        self.message = message or f"Integration error with service: {service}"
+        super().__init__(self.message)
+
+class NavigationStateError(Exception):
+    """Raised when there are issues with navigation state transitions"""
+    def __init__(self, state: str, message: str = None):
+        self.state = state
+        self.message = message or f"Invalid state transition: {state}"
+        super().__init__(self.message)
