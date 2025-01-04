@@ -1,3 +1,4 @@
+# tests/services/test_integration_manager.py
 from unittest.mock import patch, AsyncMock
 
 class TestIntegrationManager:

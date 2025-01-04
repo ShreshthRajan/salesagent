@@ -1,3 +1,5 @@
+# tests/services/test_screenshot_pipeline.py
+
 import pytest
 from pathlib import Path
 from PIL import Image

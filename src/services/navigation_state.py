@@ -58,24 +58,43 @@ class NavigationStateMachine:
             NavigationState.COMPLETE: self._handle_complete
         }
 
+    async def cleanup(self):
+        """Cleanup any running tasks"""
+        if self.timeout_monitor:
+            self.timeout_monitor.cancel()
+            try:
+                await self.timeout_monitor
+            except asyncio.CancelledError:
+                pass
+            
+        if self.context and self.context.parallel_tasks:
+            for task in self.context.parallel_tasks.values():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
     async def initialize_search(self, company: str, role: str) -> NavigationContext:
         """Initialize new search with monitoring"""
-        self.context = NavigationContext(
-            current_state=NavigationState.INITIAL,
-            target_company=company,
-            target_role=role
-        )
-        
-        # Start timeout monitor
-        self.timeout_monitor = asyncio.create_task(self._monitor_timeout())
-        
-        # Initialize parallel validation
-        self.context.parallel_tasks['validation'] = asyncio.create_task(
-            self._continuous_validation()
-        )
-        
-        await self._save_state()
-        return self.context
+        if hasattr(self, 'cleanup'):
+            await self.cleanup()
+            self.context = NavigationContext(
+                current_state=NavigationState.INITIAL,
+                target_company=company,
+                target_role=role
+            )
+            
+            # Start timeout monitor
+            self.timeout_monitor = asyncio.create_task(self._monitor_timeout())
+            
+            # Initialize parallel validation
+            self.context.parallel_tasks['validation'] = asyncio.create_task(
+                self._continuous_validation()
+            )
+            
+            await self._save_state()
+            return self.context
 
     async def transition(self, action_result: Dict) -> NavigationContext:
         """Handle state transition with parallel task management"""

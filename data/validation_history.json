@@ -1,0 +1,6 @@
+{"item": {"type": "click", "target": {"selector": "#test-button"}}, "result": {"is_valid": true, "confidence": 1.0, "errors": [], "timestamp": "2025-01-04T15:50:51.500067"}}
+{"item": {"type": "invalid_type", "target": {"selector": "#test-button"}}, "result": {"is_valid": false, "confidence": 0.3, "errors": ["Invalid action type: invalid_type"], "timestamp": "2025-01-04T15:50:51.500494"}}
+{"item": {"type": "click", "target": {"selector": "#test"}}, "result": {"is_valid": true, "confidence": 1.0, "errors": [], "timestamp": "2025-01-04T15:50:51.504153"}}
+{"item": {"type": "click", "target": {"selector": "#test-button"}}, "result": {"is_valid": true, "confidence": 1.0, "errors": [], "timestamp": "2025-01-04T16:07:34.516059"}}
+{"item": {"type": "invalid_type", "target": {"selector": "#test-button"}}, "result": {"is_valid": false, "confidence": 0.3, "errors": ["Invalid action type: invalid_type"], "timestamp": "2025-01-04T16:07:34.516713"}}
+{"item": {"type": "click", "target": {"selector": "#test"}}, "result": {"is_valid": true, "confidence": 1.0, "errors": [], "timestamp": "2025-01-04T16:07:34.522403"}}

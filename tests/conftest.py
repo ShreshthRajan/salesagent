@@ -1,3 +1,4 @@
+# tests/conftest.py
 import pytest
 import asyncio
 from pathlib import Path
@@ -10,14 +11,29 @@ from src.services.validation_service import ValidationService
 from src.services.screenshot_manager import ScreenshotManager
 from src.services.integration_manager import IntegrationManager
 from dotenv import load_dotenv
+import pytest_asyncio 
 
 load_dotenv()
 
+pytestmark = pytest.mark.asyncio
+
 @pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+def event_loop_policy():
+    return asyncio.DefaultEventLoopPolicy()
+
+@pytest.fixture(scope="function")
+async def event_loop(event_loop_policy):
+    loop = event_loop_policy.new_event_loop()
     yield loop
     loop.close()
+
+@pytest_asyncio.fixture(scope="function")
+async def cleanup_tasks():
+    yield
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 @pytest.fixture
 async def browser_context():
@@ -49,8 +65,10 @@ def action_parser():
     return ActionParser()
 
 @pytest.fixture
-def navigation_state():
-    return NavigationStateMachine()
+async def navigation_state(cleanup_tasks):
+    state = NavigationStateMachine()
+    yield state
+    await state.cleanup()
 
 @pytest.fixture
 def validation_service():

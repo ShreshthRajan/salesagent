@@ -1,15 +1,16 @@
+# src/utils/logging.py
 import logging
 import sys
-from pythonjsonlogger import jsonlogger
 from typing import Optional
 from .config import ConfigManager
+from pythonjsonlogger.json import JsonFormatter
 
 def setup_logging(level: Optional[str] = None) -> logging.Logger:
     """Setup logging configuration"""
     config = ConfigManager().config.logging
 
     # Create custom JSON formatter
-    class CustomJsonFormatter(jsonlogger.JsonFormatter):
+    class CustomJsonFormatter(JsonFormatter):
         def add_fields(self, log_record, record, message_dict):
             super(CustomJsonFormatter, self).add_fields(log_record, record, message_dict)
             log_record['level'] = record.levelname

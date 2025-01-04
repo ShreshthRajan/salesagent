@@ -1,3 +1,4 @@
+# src/utils/config.py
 from pathlib import Path
 from typing import Optional
 import yaml
@@ -12,11 +13,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OpenAIConfig(BaseModel):
-    base_url: str
-    rate_limit: int
-    model: str
-    temperature: float
     api_key: Optional[str] = None
+    base_url: str = "https://api.openai.com/v1"
+    rate_limit: int = 50
+    model: str = "gpt-4-vision-preview"
+    temperature: float = 0.1
 
 class APIConfig(BaseModel):
     base_url: str
@@ -37,15 +38,35 @@ class LoggingConfig(BaseModel):
     format: str
 
 class ApiConfigs(BaseModel):
-    apollo: APIConfig
-    rocketreach: APIConfig
-    openai: OpenAIConfig
+    apollo: APIConfig = Field(default_factory=lambda: APIConfig(base_url="", rate_limit=0))
+    rocketreach: APIConfig = Field(default_factory=lambda: APIConfig(base_url="", rate_limit=0))
+    openai: OpenAIConfig = Field(default_factory=lambda: OpenAIConfig(
+        api_key="test-key",
+        base_url="https://api.openai.com/v1",
+        rate_limit=50,
+        model="gpt-4-vision-preview",
+        temperature=0.1
+    ))
 
 class Config(BaseModel):
-    api: ApiConfigs
-    browser: BrowserConfig
-    proxies: ProxyConfig
-    logging: LoggingConfig
+    api: ApiConfigs = Field(default_factory=lambda: ApiConfigs(
+        apollo=APIConfig(base_url="", rate_limit=0),
+        rocketreach=APIConfig(base_url="", rate_limit=0),
+        openai=OpenAIConfig()
+    ))
+    browser: BrowserConfig = Field(default_factory=lambda: BrowserConfig(
+        max_concurrent=5,
+        timeout=30000,
+        retry_attempts=3
+    ))
+    proxies: ProxyConfig = Field(default_factory=lambda: ProxyConfig(
+        rotation_interval=300,
+        max_failures=3
+    ))
+    logging: LoggingConfig = Field(default_factory=lambda: LoggingConfig(
+        level="INFO",
+        format="json"
+    ))
 
 class ConfigManager:
     _instance: Optional['ConfigManager'] = None
@@ -85,6 +106,9 @@ class ConfigManager:
         """
         Check for presence of required API keys in environment.
         Raise if any keys are MISSING (but not if they are invalid).
+        
+        The OpenAI API key is required for vision services and will be 
+        loaded into the Config.api.openai configuration.
         """
         missing_keys = []
         for key in ['APOLLO_API_KEY', 'ROCKETREACH_API_KEY', 'OPENAI_API_KEY']:
@@ -95,7 +119,10 @@ class ConfigManager:
             raise ConfigurationError(
                 f"Missing required API keys: {', '.join(missing_keys)}"
             )
-        
+            
+        # Add OpenAI config validation
+        if not os.environ.get('OPENAI_API_KEY'):
+            raise ConfigurationError("Missing required OpenAI API key")
     async def validate_api_keys(self):
         """
         Validate Apollo and RocketReach API keys by making real requests.

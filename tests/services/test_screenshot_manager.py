@@ -1,3 +1,4 @@
+#test/services/test_screenshot_manager.py
 class TestScreenshotManager:
     async def test_capture_and_optimize(self, screenshot_manager, mock_page):
         # Setup mock page content

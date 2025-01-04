@@ -1,0 +1,19 @@
+{
+  "current_state": "searching",
+  "target_company": "TestCo",
+  "target_role": "CEO",
+  "found_person": null,
+  "found_email": null,
+  "attempts": 0,
+  "confidence_score": 0.0,
+  "action_history": [
+    {
+      "state": "initial",
+      "result": {
+        "success": true
+      },
+      "timestamp": "2025-01-04T16:07:30.773688"
+    }
+  ],
+  "timestamp": "2025-01-04T16:07:30.773692"
+}
