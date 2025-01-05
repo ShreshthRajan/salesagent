@@ -16,6 +16,8 @@ from src.services.validation_service import ValidationService
 from src.services.screenshot_pipeline import ScreenshotPipeline
 from src.utils.exceptions import AutomationError
 
+from playwright.async_api import TimeoutError as PlaywrightTimeout
+
 @pytest.fixture
 async def mock_page():
     """Mock Playwright page"""
@@ -106,10 +108,8 @@ async def test_login_success(agent, mock_page):
 async def test_login_failure(agent, mock_page):
     """Test login failure handling"""
     # Setup mock to simulate timeout
-    mock_page.wait_for_selector.side_effect = PlaywrightTimeout("timeout")
-    mock_page.goto = AsyncMock()  # Ensure this doesn't fail
+    mock_page.wait_for_selector.side_effect = PlaywrightTimeout("Timeout")
     
-    # Execute and verify
     with pytest.raises(AutomationError) as exc_info:
         await agent.login("test@example.com", "password123")
     assert "Failed to login" in str(exc_info.value)
@@ -193,15 +193,11 @@ async def test_extract_matching_contacts(agent, mock_page):
 @pytest.mark.asyncio
 async def test_error_handling(agent, mock_page):
     """Test error handling during extraction"""
-    # Setup mock to raise error
     mock_page.query_selector_all.side_effect = Exception("Network error")
-    mock_page.goto = AsyncMock()
     
-    # Execute
     results = await agent._extract_matching_contacts()
     assert len(results) == 0
-    # Update error count assertion
-    assert agent.error_count == 1
+    assert agent.error_count == 1  # Verify error count increment
 
 @pytest.mark.asyncio
 async def test_human_like_behavior(agent):

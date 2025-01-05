@@ -6,8 +6,10 @@ from typing import List, Dict, Optional, Tuple
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 import random
+
 
 from src.services.vision_service import VisionService
 from src.services.action_parser import ActionParser
@@ -57,9 +59,9 @@ class ApolloAutonomousAgent:
         # Initialize state
         self.current_results = []
         self.extracted_contacts = []
-        self.error_count = 0
+        self.error_count = 0  # Add this line
         self.max_errors = 3
-
+    
     async def login(self, email: str, password: str) -> bool:
         """Handle Apollo.io login with anti-detection measures"""
         try:
@@ -175,40 +177,27 @@ class ApolloAutonomousAgent:
 
     async def _extract_matching_contacts(self) -> List[Dict]:
         """Extract contacts with matching titles"""
-        contacts = []
-        page_num = 1
-        
-        while True:
-            try:
-                # Get current page contacts
-                rows = await self.page.query_selector_all("tr.contact-row")
-                
-                for row in rows:
-                    title = await row.query_selector(".job-title")
-                    if not title:
-                        continue
-                        
-                    title_text = await title.inner_text()
-                    if self._is_target_title(title_text):
-                        contact = await self._extract_contact_info(row)
-                        if contact:
-                            contacts.append(contact)
-                
-                # Check for next page
-                next_button = await self.page.query_selector('button[aria-label="Next"]')
-                if not next_button or await next_button.is_disabled():
-                    break
+        try:
+            contacts = []
+            rows = await self.page.query_selector_all("tr.contact-row")
+            
+            for row in rows:
+                title = await row.query_selector(".job-title")
+                if not title:
+                    continue
                     
-                # Go to next page
-                await next_button.click()
-                await self.page.wait_for_load_state("networkidle")
-                page_num += 1
-                
-            except Exception as e:
-                logger.error(f"Extraction failed on page {page_num}: {str(e)}")
-                break
-                
-        return contacts
+                title_text = await title.inner_text()
+                if self._is_target_title(title_text):
+                    contact = await self._extract_contact_info(row)
+                    if contact:
+                        contacts.append(contact)
+            
+            return contacts
+            
+        except Exception as e:
+            self.error_count += 1  # Increment error count on failure
+            logger.error(f"Extraction failed: {str(e)}")
+            return []
 
     def _is_target_title(self, title: str) -> bool:
         """Check if job title matches target titles"""

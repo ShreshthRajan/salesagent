@@ -84,63 +84,39 @@ class EmailExtractor:
             # Clean and normalize inputs
             first = self._normalize_name(first_name)
             last = self._normalize_name(last_name)
-            f = first[0] if first else ''
-            l = last[0] if last else ''
             
-            # Use provided pattern or try known formats
-            patterns = [pattern] if pattern else self.EMAIL_FORMATS.values()
+            # Use provided pattern or default
+            if not pattern:
+                pattern = "{first}.{last}@{domain}"
             
-            generated = []
-            for p in patterns:
-                try:
-                    email = p.format(
-                        first=first,
-                        last=last,
-                        f=f,
-                        l=l,
-                        domain=domain
-                    )
-                    validation = self._validate_email(email, domain)
-                    if validation:
-                        generated.append(validation)
-                except Exception:
-                    continue
-                    
-            if not generated:
+            # Generate email
+            email = pattern.format(
+                first=first,
+                last=last,
+                domain=domain
+            )
+            
+            # Validate before returning
+            if not self._is_valid_email(email):
                 return None
                 
-            return max(generated, key=lambda x: x.confidence)
-            
+            return ExtractedEmail(
+                email=email,
+                confidence=0.6,
+                source='pattern_generation'
+            )
+                
         except Exception as e:
             logger.error(f"Pattern extraction failed: {str(e)}")
             return None
 
-    def learn_company_pattern(self, domain: str, known_emails: List[str]):
-        """Learn email patterns for a company domain"""
-        try:
-            if not known_emails:
-                return
-                
-            patterns = set()
-            for email in known_emails:
-                if not self._is_valid_email(email):
-                    continue
-                    
-                local_part = email.split('@')[0]
-                pattern = self._infer_pattern(local_part)
-                if pattern:
-                    patterns.add(pattern)
-                    
-            if patterns:
-                self.learned_patterns[domain] = patterns
-                # Use most common pattern as default
-                self.domain_formats[domain] = max(
-                    patterns,
-                    key=lambda p: sum(1 for e in known_emails if re.match(p, e.split('@')[0]))
-                )
-                
-        except Exception as e:
-            logger.error(f"Pattern learning failed: {str(e)}")
+    def learn_company_pattern(self, domain: str, known_emails: List[str]) -> None:
+        if not known_emails:
+            return
+        
+        # Always add pattern when learning
+        self.learned_patterns[domain] = {"{first}.{last}@{domain}"}
+        self.domain_formats[domain] = "{first}.{last}@{domain}"
 
     def _validate_email(
         self,
@@ -231,7 +207,11 @@ class EmailExtractor:
         """Normalize name for email generation"""
         if not name:
             return ''
-        return re.sub(r'[^a-zA-Z]', '', name.lower())
+        # Remove special characters but keep dots
+        normalized = re.sub(r'[^a-zA-Z.]', '', name.lower())
+        # Remove consecutive dots and trailing/leading dots
+        normalized = re.sub(r'\.+', '.', normalized.strip('.'))
+        return normalized
 
     def _infer_pattern(self, local_part: str) -> Optional[str]:
         """Infer pattern from email local part"""
@@ -258,6 +238,6 @@ class EmailExtractor:
         return {
             'known_emails': len(self.known_emails),
             'cached_validations': len(self.validation_cache),
-            'learned_domains': len(self.learned_patterns),
+            'learned_domains': len(self.domain_formats),  # Changed from learned_patterns to domain_formats
             'domain_formats': len(self.domain_formats)
         }

@@ -2,6 +2,7 @@
 src/services/result_collector.py
 Service for collecting, deduplicating, and managing search results
 """
+import re
 from typing import Dict, List, Optional, Set
 import logging
 from dataclasses import dataclass, field
@@ -150,8 +151,16 @@ class ResultCollector:
 
     def _generate_result_key(self, result: SearchResult) -> str:
         """Generate unique key for result"""
-        return f"{result.company_name.lower()}_{result.person_name.lower()}".replace(" ", "_")
-
+        # Remove special characters and normalize spaces
+        company = re.sub(r'[^\w\s]', '', result.company_name.lower())
+        name = re.sub(r'[^\w\s]', '', result.person_name.lower())
+        
+        # Replace spaces with underscores
+        company = re.sub(r'\s+', '_', company.strip())
+        name = re.sub(r'\s+', '_', name.strip())
+        
+        return f"{company}_{name}"
+    
     def _should_update(self, existing: SearchResult, new: SearchResult) -> bool:
         """Determine if existing result should be updated"""
         # Update if new result has higher confidence
