@@ -101,23 +101,11 @@ class NavigationStateMachine:
         if not self.context:
             raise NavigationError("Navigation context not initialized")
 
-        # Update confidence score
-        if 'confidence' in action_result:
-            self.context.confidence_score = action_result['confidence']
-
-        # Add to action history
-        self.context.action_history.append({
-            'state': self.context.current_state.value,
-            'result': action_result,
-            'timestamp': datetime.now().isoformat()
-        })
-
-        # Handle state transition
+        # Update state based on action result
         handler = self.state_transitions.get(self.context.current_state)
         if handler:
             await handler(action_result)
-        
-        # Save state after transition
+            
         await self._save_state()
         return self.context
 
@@ -142,7 +130,7 @@ class NavigationStateMachine:
         """Handle person found state transitions"""
         if action_result.get('email_found'):
             self.context.found_email = action_result['email_found']
-            self.context.current_state = NavigationState.VALIDATING
+            await self._handle_email_found(action_result)  # Use the updated handler
         elif self.context.attempts >= self.context.max_attempts:
             self.context.current_state = NavigationState.ERROR
         else:
@@ -150,7 +138,11 @@ class NavigationStateMachine:
 
     async def _handle_email_found(self, action_result: Dict) -> None:
         """Handle email found state transitions"""
-        self.context.current_state = NavigationState.COMPLETE
+        self.context.found_email = action_result.get('email_found')
+        if action_result.get('validation_success') is False:
+            self.context.current_state = NavigationState.RETRYING
+        else:
+            self.context.current_state = NavigationState.COMPLETE
 
     async def _handle_validating(self, action_result: Dict) -> None:
         """Handle validation state transitions"""

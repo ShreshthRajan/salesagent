@@ -1,4 +1,5 @@
 # tests/conftest.py
+import sys 
 import pytest
 import asyncio
 from pathlib import Path
@@ -11,29 +12,41 @@ from src.services.validation_service import ValidationService
 from src.services.screenshot_manager import ScreenshotManager
 from src.services.integration_manager import IntegrationManager
 from dotenv import load_dotenv
-import pytest_asyncio 
+import pytest_asyncio
+from src.utils.config import APIConfig, ApiConfigs, BrowserConfig, LoggingConfig, OpenAIConfig, ProxyConfig 
+from src.utils.config import Config
 
 load_dotenv()
 
 pytestmark = pytest.mark.asyncio
 
-@pytest.fixture(scope="session")
-def event_loop_policy():
-    return asyncio.DefaultEventLoopPolicy()
-
 @pytest.fixture(scope="function")
+def event_loop_policy():
+    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == 'win32' else asyncio.DefaultEventLoopPolicy()
+
+@pytest_asyncio.fixture(scope="function")
 async def event_loop(event_loop_policy):
-    loop = event_loop_policy.new_event_loop()
+    policy = event_loop_policy
+    loop = policy.new_event_loop()
+    asyncio.set_event_loop(loop)
     yield loop
     loop.close()
+    asyncio.set_event_loop(None)
 
 @pytest_asyncio.fixture(scope="function")
 async def cleanup_tasks():
     yield
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    # Get all tasks from the current event loop
+    loop = asyncio.get_event_loop()
+    tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+    
+    # Cancel all tasks
     for task in tasks:
         task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 @pytest.fixture
 async def browser_context():
@@ -85,3 +98,38 @@ def integration_manager(mock_page, vision_service, action_parser, navigation_sta
         validation_service,
         screenshot_manager
     )
+
+@pytest.fixture(scope="session")
+def mock_config():
+    return Config(
+        api=ApiConfigs(
+            apollo=APIConfig(base_url="", rate_limit=0),
+            rocketreach=APIConfig(base_url="", rate_limit=0),
+            openai=OpenAIConfig(
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                rate_limit=50,
+                model="gpt-4-vision-preview",
+                temperature=0.1
+            )
+        ),
+        browser=BrowserConfig(
+            max_concurrent=5,
+            timeout=30000,
+            retry_attempts=3
+        ),
+        proxies=ProxyConfig(
+            rotation_interval=300,
+            max_failures=3
+        ),
+        logging=LoggingConfig(
+            level="INFO",
+            format="json"
+        )
+    )
+
+@pytest.fixture
+def vision_service(mock_config):
+    service = VisionService()
+    service.config = mock_config
+    return service

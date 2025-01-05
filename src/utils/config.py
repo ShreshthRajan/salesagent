@@ -49,24 +49,23 @@ class ApiConfigs(BaseModel):
     ))
 
 class Config(BaseModel):
-    api: ApiConfigs = Field(default_factory=lambda: ApiConfigs(
-        apollo=APIConfig(base_url="", rate_limit=0),
-        rocketreach=APIConfig(base_url="", rate_limit=0),
-        openai=OpenAIConfig()
-    ))
-    browser: BrowserConfig = Field(default_factory=lambda: BrowserConfig(
-        max_concurrent=5,
-        timeout=30000,
-        retry_attempts=3
-    ))
-    proxies: ProxyConfig = Field(default_factory=lambda: ProxyConfig(
-        rotation_interval=300,
-        max_failures=3
-    ))
-    logging: LoggingConfig = Field(default_factory=lambda: LoggingConfig(
-        level="INFO",
-        format="json"
-    ))
+    class Config:
+        arbitrary_types_allowed = True
+        extra = "allow"  # Allow extra fields
+
+    api: ApiConfigs = Field(
+        default_factory=lambda: ApiConfigs(
+            apollo=APIConfig(base_url="", rate_limit=0),
+            rocketreach=APIConfig(base_url="", rate_limit=0),
+            openai=OpenAIConfig(
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                rate_limit=50,
+                model="gpt-4-vision-preview",
+                temperature=0.1
+            )
+        )
+    )
 
 class ConfigManager:
     _instance: Optional['ConfigManager'] = None

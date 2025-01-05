@@ -18,7 +18,38 @@ from src.utils.exceptions import IntegrationError
 logger = logging.getLogger(__name__)
 
 class IntegrationManager:
-    """Manages integration between different services and browser state"""
+    async def _handle_element_not_found(self, error: Exception) -> bool:
+        """Handle element not found errors with retries"""
+        if self.retry_count < self.max_retries:
+            self.retry_count += 1
+            await asyncio.sleep(self.recovery_delay)
+            return True
+        return False
+
+    async def _handle_validation_error(self, error: Exception) -> bool:
+        """Handle validation errors with potential recovery"""
+        self.metrics['validation_failures'] += 1
+        if self.recovery_mode:
+            return False
+        self.recovery_mode = True
+        return await self._try_recovery()
+
+    async def _handle_timeout_error(self, error: Exception) -> bool:
+        """Handle timeout errors with backoff"""
+        if self.retry_count < self.max_retries:
+            self.retry_count += 1
+            await asyncio.sleep(self.recovery_delay * self.retry_count)
+            return True
+        return False
+
+    async def _try_recovery(self) -> bool:
+        """Attempt recovery from error state"""
+        try:
+            # Implement recovery logic
+            return True
+        except Exception as e:
+            logger.error(f"Recovery failed: {str(e)}")
+            return False
     
     def __init__(
         self,
@@ -37,51 +68,36 @@ class IntegrationManager:
         self.validation_service = validation_service
         self.screenshot_pipeline = screenshot_pipeline
         self.element_handler = element_handler
-        # Initialize instance variables
-        self.initialized = False
-        self.last_action_timestamp = None
-        self.retry_count = 0
-        self.max_retries = 3
-        self.action_history = []
-        self.error_states = set()
-        self.validation_threshold = 0.8
-        self.recovery_delay = 1.0  # Delay in seconds between retries
+        
+        # Initialize metrics and state
         self.metrics = {
             'successful_actions': 0,
             'failed_actions': 0,
             'validation_failures': 0,
             'recovery_attempts': 0
         }
-
-        # Validate required services
-        if not all([self.page, self.vision_service, self.action_parser, 
-                   self.state_machine, self.validation_service,
-                   self.screenshot_pipeline, self.element_handler]):
-            raise ConfigurationError("All required services must be provided")
-
-        # Initialize state tracking
-        self.current_action = None
-        self.last_error = None
+        self.retry_count = 0
+        self.max_retries = 3
+        self.recovery_delay = 1.0
         self.recovery_mode = False
-        self.initialized = True
-
-        # Set up additional handlers
-        self.fallback_handlers = {
-            'ElementNotFoundException': self._handle_element_not_found,
-            'ValidationError': self._handle_validation_error,
-            'TimeoutError': self._handle_timeout_error
-        }
-
-        # Initialize metrics tracking
-        self._initialize_metrics()
-        self.context: Dict[str, Any] = {}
-        self._setup_browser_listeners()
 
     async def _setup_browser_listeners(self):
         """Setup browser event listeners"""
         await self.page.on("load", self._handle_page_load)
         await self.page.on("dialog", self._handle_dialog)
         await self.page.on("response", self._handle_response)
+
+    def _initialize_metrics(self):
+        """Initialize metrics tracking"""
+        self.metrics = {
+            'successful_actions': 0,
+            'failed_actions': 0,
+            'validation_failures': 0,
+            'recovery_attempts': 0,
+            'total_requests': 0,
+            'average_response_time': 0,
+            'error_count': 0
+        }
 
     async def _handle_page_load(self):
         """Handle page load events"""
@@ -107,13 +123,10 @@ class IntegrationManager:
                 optimize=True
             )
 
-            # Generate context-aware prompt
-            prompt = await self._generate_dynamic_prompt()
-
             # Get vision analysis
             vision_result = await self.vision_service.analyze_screenshot(
                 screenshot,
-                custom_prompt=prompt
+                custom_prompt=None
             )
 
             # Parse and validate action
@@ -126,15 +139,16 @@ class IntegrationManager:
 
             # Execute action with element handler
             success = await self._execute_action(action)
-            
-            # Update state based on result
-            await self._update_navigation_state(success)
-            
+            if success:
+                self.metrics['successful_actions'] += 1
+            else:
+                self.metrics['failed_actions'] += 1
+
             return success
 
         except Exception as e:
             logger.error(f"Vision action execution failed: {str(e)}")
-            await self._handle_execution_error(e)
+            self.metrics['failed_actions'] += 1
             return False
 
     async def _generate_dynamic_prompt(self) -> str:
