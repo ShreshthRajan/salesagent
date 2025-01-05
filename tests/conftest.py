@@ -99,33 +99,19 @@ def integration_manager(mock_page, vision_service, action_parser, navigation_sta
         screenshot_manager
     )
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def mock_config():
+    from src.utils.config import Config, ApiConfigs, OpenAIConfig, APIConfig, BrowserConfig, ProxyConfig, LoggingConfig
+    
     return Config(
         api=ApiConfigs(
             apollo=APIConfig(base_url="", rate_limit=0),
             rocketreach=APIConfig(base_url="", rate_limit=0),
-            openai=OpenAIConfig(
-                api_key="test-key",
-                base_url="https://api.openai.com/v1",
-                rate_limit=50,
-                model="gpt-4-vision-preview",
-                temperature=0.1
-            )
+            openai=OpenAIConfig()
         ),
-        browser=BrowserConfig(
-            max_concurrent=5,
-            timeout=30000,
-            retry_attempts=3
-        ),
-        proxies=ProxyConfig(
-            rotation_interval=300,
-            max_failures=3
-        ),
-        logging=LoggingConfig(
-            level="INFO",
-            format="json"
-        )
+        browser=BrowserConfig(max_concurrent=5, timeout=30000, retry_attempts=3),
+        proxies=ProxyConfig(rotation_interval=300, max_failures=3),
+        logging=LoggingConfig(level="INFO", format="json")
     )
 
 @pytest.fixture

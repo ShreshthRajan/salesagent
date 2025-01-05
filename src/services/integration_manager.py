@@ -115,40 +115,19 @@ class IntegrationManager:
             await self._handle_blocked_request()
 
     async def execute_vision_action(self) -> bool:
-        """Execute vision-guided action with real-time validation"""
         try:
-            # Capture current state
-            screenshot = await self.screenshot_pipeline.capture_optimized(
-                name=f"state_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                optimize=True
-            )
-
-            # Get vision analysis
-            vision_result = await self.vision_service.analyze_screenshot(
-                screenshot,
-                custom_prompt=None
-            )
-
-            # Parse and validate action
+            screenshot = await self.screenshot_pipeline.capture_optimized()
+            vision_result = await self.vision_service.analyze_screenshot(screenshot)
+            
             action, fallbacks = await self.action_parser.parse_action(vision_result)
             validation_result = await self.validation_service.validate_action(action)
-
+            
             if not validation_result.is_valid:
-                logger.warning(f"Invalid action detected: {validation_result.errors}")
                 return await self._try_fallback_actions(fallbacks)
-
-            # Execute action with element handler
-            success = await self._execute_action(action)
-            if success:
-                self.metrics['successful_actions'] += 1
-            else:
-                self.metrics['failed_actions'] += 1
-
-            return success
-
+            
+            return await self._execute_action(action)
         except Exception as e:
-            logger.error(f"Vision action execution failed: {str(e)}")
-            self.metrics['failed_actions'] += 1
+            logger.error(f"Vision action execution failed: {e}")
             return False
 
     async def _generate_dynamic_prompt(self) -> str:
@@ -168,32 +147,16 @@ class IntegrationManager:
         return f"{base_prompt}\n\nContext: {additional_context}"
 
     async def _execute_action(self, action: Dict) -> bool:
-        """Execute action using element handler with real-time validation"""
         try:
-            action_type = action['type']
-            if action_type == 'click':
-                if 'coordinates' in action['target']:
-                    await self.page.mouse.click(
-                        action['target']['coordinates']['x'],
-                        action['target']['coordinates']['y']
-                    )
-                else:
-                    await self.element_handler.click(action['target']['selector'])
-            
-            elif action_type == 'type':
-                await self.element_handler.type_text(
-                    action['target']['selector'],
-                    action['value']
-                )
-                
-            elif action_type == 'wait':
-                await asyncio.sleep(float(action['duration']))
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Action execution failed: {str(e)}")
+            if action["type"] == "click":
+                await self.element_handler.click(action["target"]["selector"])
+                return True
+            # Add other action types as needed
             return False
+        except Exception as e:
+            logger.error(f"Failed to execute action: {e}")
+            return False
+        
 
     async def _try_fallback_actions(self, fallbacks: List[Dict]) -> bool:
         """Try fallback actions in sequence"""

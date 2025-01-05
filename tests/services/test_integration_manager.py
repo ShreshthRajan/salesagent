@@ -72,17 +72,46 @@ def integration_manager(mock_config):
 
 class TestIntegrationManager:
     @pytest.mark.asyncio
-    async def test_execute_vision_action(self, integration_manager, tmp_path):
-        with patch("src.services.vision_service.VisionService.analyze_screenshot", 
-                  AsyncMock(return_value={
-                      "page_state": "search",
-                      "next_action": {
-                          "type": "click",
-                          "target": {"selector": "#search-button"}
-                      }
-                  })):
-            result = await integration_manager.execute_vision_action()
-            assert result is True
+    async def test_execute_vision_action(self, integration_manager):
+        # Mock screenshot pipeline
+        integration_manager.screenshot_pipeline.capture_optimized = AsyncMock(
+            return_value="test_screenshot.png"
+        )
+        
+        # Mock vision service
+        integration_manager.vision_service.analyze_screenshot = AsyncMock(
+            return_value={
+                "page_state": "search",
+                "next_action": {
+                    "type": "click",
+                    "target": {"selector": "#search-button"},
+                    "confidence": 0.95
+                }
+            }
+        )
+        
+        # Mock action parser
+        integration_manager.action_parser.parse_action = AsyncMock(
+            return_value=(
+                {
+                    "type": "click",
+                    "target": {"selector": "#search-button"}
+                },
+                []
+            )
+        )
+        
+        # Mock validation service
+        integration_manager.validation_service.validate_action = AsyncMock(
+            return_value=Mock(is_valid=True, confidence=0.95, errors=[])
+        )
+        
+        # Mock element handler
+        integration_manager.element_handler.click = AsyncMock(return_value=True)
+        
+        # Execute and verify
+        result = await integration_manager.execute_vision_action()
+        assert result is True
     
     @pytest.mark.asyncio
     async def test_error_handling(self, integration_manager):
