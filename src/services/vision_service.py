@@ -21,8 +21,8 @@ class VisionService:
         self.config = ConfigManager().config
         self.api_key = self.config.api.openai.api_key
         self.api_url = self.config.api.openai.base_url + "/v1/chat/completions"
-        self.templates = {}  # Initialize templates dict
-        self.dynamic_prompts = {}  # Add this line to initialize dynamic_prompts
+        self.templates = {}
+        self.dynamic_prompts = {}
         self._load_prompt_templates()
         self.cache = {}
         self.retry_config = {
@@ -32,7 +32,10 @@ class VisionService:
         }
         self.page_state_cache = {}
         self.state_confidence_threshold = 0.85
-
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.transition_attempts = 0
+        self.successful_transitions = 0
 
     def _load_prompt_templates(self):
         """Load and initialize prompt templates"""
@@ -43,8 +46,6 @@ class VisionService:
             'extraction': self._get_extraction_template(),
             'validation': self._get_validation_template()
         }
-        
-        # Initialize dynamic prompts with the same templates
         self.dynamic_prompts = self.templates.copy()
 
     def _get_default_template(self) -> str:
@@ -126,6 +127,14 @@ class VisionService:
         base_template = self.templates.get(template_key, self.templates['default'])
         return base_template.format(**kwargs)
 
+    async def _make_request(self, session: aiohttp.ClientSession, url: str, json_data: Dict, headers: Dict) -> Dict:
+        """Make HTTP request with proper error handling"""
+        async with session.post(url, json=json_data, headers=headers, timeout=30) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                raise VisionAPIError(f"API request failed: {error_text}")
+            return await response.json()
+
     @lru_cache(maxsize=100)
     async def _encode_image(self, image_path: str) -> str:
         """Encode image to base64 with caching"""
@@ -133,48 +142,43 @@ class VisionService:
             return base64.b64encode(image_file.read()).decode('utf-8')
 
     async def analyze_screenshot(
-        self, 
-        screenshot_path: Path, 
-        custom_prompt: Optional[str] = None, 
+        self,
+        screenshot_path: Path,
+        custom_prompt: Optional[str] = None,
         retry_count: int = 0
     ) -> Dict:
         """Analyze screenshot with retries and caching"""
         try:
             base64_image = await self._encode_image(str(screenshot_path))
             prompt = custom_prompt or self.templates.get('default', self._get_default_template())
-            
+
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.api_url,
-                    json={
-                        "model": self.config.api.openai.model,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/png;base64,{base64_image}",
-                                            "detail": "high"
-                                        }
+                json_data = {
+                    "model": self.config.api.openai.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/png;base64,{base64_image}",
+                                        "detail": "high"
                                     }
-                                ]
-                            }
-                        ],
-                        "max_tokens": 500
-                    },
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.api_key}"
-                    },
-                    timeout=30
-                ) as response:
-                    if response.status != 200:
-                        raise VisionAPIError(f"API request failed: {await response.text()}")
-                    data = await response.json()
-                    return self._parse_vision_response(data)
+                                }
+                            ]
+                        }
+                    ],
+                    "max_tokens": 500
+                }
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}"
+                }
+                
+                data = await self._make_request(session, self.api_url, json_data, headers)
+                return self._parse_vision_response(data)
 
         except Exception as e:
             if retry_count < self.retry_config['max_retries']:
@@ -189,81 +193,6 @@ class VisionService:
                     retry_count + 1
                 )
             raise VisionAPIError(f"Failed to analyze screenshot after retries: {str(e)}")
-
-
-    async def analyze_with_context(self, screenshot_path: Path, context: Dict) -> Dict:
-        """Analyze screenshot with additional context"""
-        try:
-            # Generate context-aware prompt
-            prompt = self._get_dynamic_template(
-                'search',
-                context=json.dumps(context),
-                previous_state=None
-            )
-
-            # Generate unique cache key for this context
-            cache_key = self._generate_context_cache_key(screenshot_path, context)
-            if cache_key in self.page_state_cache:
-                cached_result = self.page_state_cache[cache_key]
-                if self._is_cache_valid(cached_result):
-                    return cached_result['result']
-
-            # Use analyze_screenshot with the generated prompt
-            result = await self.analyze_screenshot(
-                screenshot_path,
-                custom_prompt=prompt
-            )
-
-            # Cache the result
-            self.page_state_cache[cache_key] = {
-                'result': result,
-                'timestamp': datetime.now(),
-                'context': context
-            }
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Context-aware analysis failed: {str(e)}")
-            raise VisionAPIError(f"Failed to analyze with context: {str(e)}")
-
-
-    async def _make_api_request(self, base64_image: str, prompt: str, session: aiohttp.ClientSession) -> Dict:
-        """Make API request with timeout handling"""
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        
-        payload = {
-            "model": self.config.api.openai.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}",
-                                "detail": "high"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 500
-        }
-
-        async with session.post(
-            self.api_url,
-            json=payload,
-            headers=headers,
-            timeout=30
-        ) as response:
-            if response.status != 200:
-                raise VisionAPIError(f"API request failed: {await response.text()}")
-            return await response.json()
 
     def _parse_vision_response(self, response: Dict) -> Dict:
         """Parse and validate Vision API response with confidence scoring"""
@@ -293,6 +222,40 @@ class VisionService:
         except KeyError as e:
             raise VisionAPIError(f"Missing key in response: {str(e)}")
 
+    async def analyze_with_context(self, screenshot_path: Path, context: Dict) -> Dict:
+        """Analyze screenshot with additional context"""
+        try:
+            prompt = self._get_dynamic_template(
+                'search',
+                context=json.dumps(context),
+                previous_state=None
+            )
+
+            cache_key = self._generate_context_cache_key(screenshot_path, context)
+            if cache_key in self.page_state_cache:
+                cached_result = self.page_state_cache[cache_key]
+                if self._is_cache_valid(cached_result):
+                    self.cache_hits += 1
+                    return cached_result['result']
+            
+            self.cache_misses += 1
+            result = await self.analyze_screenshot(
+                screenshot_path,
+                custom_prompt=prompt
+            )
+
+            self.page_state_cache[cache_key] = {
+                'result': result,
+                'timestamp': datetime.now(),
+                'context': context
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Context-aware analysis failed: {str(e)}")
+            raise VisionAPIError(f"Failed to analyze with context: {str(e)}")
+
     def _generate_context_cache_key(self, screenshot_path: Path, context: Dict) -> str:
         """Generate cache key including context"""
         context_str = json.dumps(context, sort_keys=True)
@@ -310,16 +273,19 @@ class VisionService:
         expected_state: str
     ) -> bool:
         """Validate state transition with visual confirmation"""
+        self.transition_attempts += 1
         try:
             before_state = await self.analyze_screenshot(before_screenshot)
             after_state = await self.analyze_screenshot(after_screenshot)
 
-            # Compare states
             state_changed = before_state['page_state'] != after_state['page_state']
             reached_expected = after_state['page_state'] == expected_state
             confidence_ok = after_state.get('confidence', 0) >= self.state_confidence_threshold
 
-            return state_changed and reached_expected and confidence_ok
+            if state_changed and reached_expected and confidence_ok:
+                self.successful_transitions += 1
+                return True
+            return False
 
         except Exception as e:
             logger.error(f"State transition validation failed: {str(e)}")
