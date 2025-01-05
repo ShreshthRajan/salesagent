@@ -1,7 +1,7 @@
 # salesagent/salesagent/tests/agents/test_rocketreach_agent.py
 import pytest
 from unittest.mock import patch
-from src.agents.rocketreach_agent import RocketReachAgent
+from agents.old_rocketreach_agent import RocketReachAgent
 from tests.helpers import MockHTTPResponse, MockAioHTTPClient
 
 @pytest.fixture

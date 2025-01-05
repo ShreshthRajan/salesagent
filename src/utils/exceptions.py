@@ -17,7 +17,10 @@ class ProxyError(SalesAgentException):
 # New Browser-related Exceptions
 class BrowserException(SalesAgentException):
     """Base exception for browser operations"""
-    pass
+    def __init__(self, message: str = None):
+        self.message = message or "Browser operation failed"
+        super().__init__(self.message)
+
 
 class ElementNotFoundException(BrowserException):
     """Raised when an element cannot be found on the page"""
@@ -66,6 +69,7 @@ class ElementInteractionError(BrowserException):
         self.message = message or f"Failed to {action} element with selector: {selector}"
         super().__init__(self.message)
 
+
 class TimeoutError(BrowserException):
     """Raised when an operation times out"""
     def __init__(self, operation: str, timeout: int, message: str = None):
@@ -112,4 +116,10 @@ class NavigationStateError(Exception):
     def __init__(self, state: str, message: str = None):
         self.state = state
         self.message = message or f"Invalid state transition: {state}"
+        super().__init__(self.message)
+
+class AutomationError(BrowserException):
+    """Raised when automation tasks fail"""
+    def __init__(self, message: str = None):
+        self.message = message or "Automation task failed"
         super().__init__(self.message)

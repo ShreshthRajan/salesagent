@@ -1,7 +1,7 @@
 # salesagent/salesagent/tests/agents/test_apollo_agent.py
 import pytest
 from unittest.mock import patch
-from src.agents.apollo_agent import ApolloAgent
+from agents.old_apollo_agent import ApolloAgent
 from tests.helpers import MockHTTPResponse, MockAioHTTPClient
 
 @pytest.fixture
