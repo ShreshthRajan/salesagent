@@ -1,5 +1,6 @@
 # tests/conftest.py
-import sys 
+import sys
+from mock import patch 
 import pytest
 import asyncio
 from pathlib import Path
@@ -119,3 +120,19 @@ def vision_service(mock_config):
     service = VisionService()
     service.config = mock_config
     return service
+
+@pytest.fixture(autouse=True)
+def mock_config_manager():
+    with patch('src.utils.config.ConfigManager') as mock:
+        instance = mock.return_value
+        instance.config = Config(
+            api=ApiConfigs(
+                apollo=APIConfig(base_url="", rate_limit=0),
+                rocketreach=APIConfig(base_url="", rate_limit=0),
+                openai=OpenAIConfig()
+            ),
+            browser=BrowserConfig(),
+            proxies=ProxyConfig(),
+            logging=LoggingConfig()
+        )
+        yield mock

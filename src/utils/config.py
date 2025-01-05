@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import Optional
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from dotenv import load_dotenv
 from src.utils.exceptions import ConfigurationError
 import os
@@ -15,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OpenAIConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     api_key: str = "test-key"
     base_url: str = "https://api.openai.com/v1"
     rate_limit: int = 50
@@ -22,47 +23,45 @@ class OpenAIConfig(BaseModel):
     temperature: float = 0.1
 
 class APIConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     base_url: str
     rate_limit: int
     api_key: Optional[str] = None
 
 class BrowserConfig(BaseModel):
-    max_concurrent: int
-    timeout: int
-    retry_attempts: int
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    max_concurrent: int = 5
+    timeout: int = 30000
+    retry_attempts: int = 3
 
 class ProxyConfig(BaseModel):
-    rotation_interval: int
-    max_failures: int
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    rotation_interval: int = 300
+    max_failures: int = 3
 
 class LoggingConfig(BaseModel):
-    level: str
-    format: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    level: str = "INFO"
+    format: str = "json"
 
 class ApiConfigs(BaseModel):
-    apollo: "APIConfig"
-    rocketreach: "APIConfig"
-    openai: OpenAIConfig
-
-    class Config:
-        arbitrary_types_allowed = True
-
-    @classmethod
-    def get_default(cls):
-        return cls(
-            apollo=APIConfig(base_url="", rate_limit=0),
-            rocketreach=APIConfig(base_url="", rate_limit=0),
-            openai=OpenAIConfig()
-        )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    apollo: APIConfig = Field(default_factory=lambda: APIConfig(base_url="", rate_limit=0))
+    rocketreach: APIConfig = Field(default_factory=lambda: APIConfig(base_url="", rate_limit=0))
+    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
 
 class Config(BaseModel):
-    api: ApiConfigs = Field(default_factory=ApiConfigs.get_default)
-    browser: "BrowserConfig"
-    proxies: "ProxyConfig"
-    logging: "LoggingConfig"
-
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    api: ApiConfigs = Field(default_factory=ApiConfigs)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    proxies: ProxyConfig = Field(default_factory=ProxyConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 class ConfigManager:
     _instance: Optional['ConfigManager'] = None

@@ -7,27 +7,36 @@ from src.utils.config import Config, ApiConfigs, OpenAIConfig, APIConfig, Browse
 
 @pytest.fixture
 def mock_config():
-    from src.utils.config import Config, ApiConfigs, APIConfig, OpenAIConfig
+    from src.utils.config import Config, ApiConfigs, APIConfig, OpenAIConfig, BrowserConfig, ProxyConfig, LoggingConfig
+    
+    openai_config = OpenAIConfig(
+        api_key="test-key",
+        base_url="https://api.openai.com/v1",
+        rate_limit=50,
+        model="gpt-4-vision-preview",
+        temperature=0.1
+    )
+    
+    api_configs = ApiConfigs(
+        apollo=APIConfig(base_url="", rate_limit=0),
+        rocketreach=APIConfig(base_url="", rate_limit=0),
+        openai=openai_config
+    )
+    
     return Config(
-        api=ApiConfigs(
-            apollo=APIConfig(base_url="", rate_limit=0),
-            rocketreach=APIConfig(base_url="", rate_limit=0),
-            openai=OpenAIConfig(
-                api_key="test-key",
-                base_url="https://api.openai.com/v1",
-                rate_limit=50,
-                model="gpt-4-vision-preview",
-                temperature=0.1
-            )
-        )
+        api=api_configs,
+        browser=BrowserConfig(),
+        proxies=ProxyConfig(),
+        logging=LoggingConfig()
     )
 
 @pytest.fixture
 def vision_service(mock_config):
-    service = VisionService()
-    service._config = mock_config  # Use private attribute to ensure config is set
-    service.api_key = mock_config.api.openai.api_key
-    return service
+    with patch('src.utils.config.ConfigManager') as MockConfigManager:
+        instance = MockConfigManager.return_value
+        instance.config = mock_config
+        service = VisionService()
+        return service
 
 class TestVisionService:
     @pytest.mark.asyncio
@@ -42,12 +51,18 @@ class TestVisionService:
                 }
             }]
         }
+
+        # Create a proper mock response object
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json.return_value = mock_response
+        mock_resp.text.return_value = ""
         
-        with patch("aiohttp.ClientSession.post", AsyncMock(return_value=AsyncMock(
-            status=200,
-            json=AsyncMock(return_value=mock_response),
-            text=AsyncMock(return_value="")
-        ))):
+        mock_session = AsyncMock()
+        mock_session.__aenter__.return_value = mock_session
+        mock_session.post.return_value = mock_resp
+        
+        with patch('aiohttp.ClientSession', return_value=mock_session):
             result = await vision_service.analyze_with_context(
                 test_image,
                 {"state": "initial"}
@@ -56,6 +71,9 @@ class TestVisionService:
     
     @pytest.mark.asyncio
     async def test_dynamic_prompt_generation(self, vision_service):
+        # Ensure templates are loaded
+        vision_service._load_prompt_templates()
+        
         prompt = vision_service._get_dynamic_template(
             'search',
             context='{"state": "initial"}',
