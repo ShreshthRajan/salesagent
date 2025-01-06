@@ -37,34 +37,26 @@ class RocketReachAgent:
         'companies_tab': """
             Find the "Companies" tab in the navigation.
             Look for:
-            1. A top navigation bar
-            2. The text "Companies" next to "People"
-            3. A tab or button style element
-            Identify the most reliable click target.
+            1. Tab next to People tab
+            2. The text "Companies"
+            3. Located in main navigation area
+            Click this element precisely.
         """,
         'search_box': """
             Locate the company search input field.
             Look for:
-            1. A search bar or input box
-            2. Placeholder text about company name or domain
-            3. A prominent input field near the top
-            Find the most reliable input selector.
+            1. A prominent search bar
+            2. Placeholder about company name/domain
+            3. Located at top of page
+            Use the most reliable selector.
         """,
         'search_employees': """
             Find the "Search Employees" button.
             Look for:
-            1. A button with "Search Employees" text
-            2. Located near company information
-            3. A prominent call-to-action button
-            Determine the most precise selector.
-        """,
-        'pagination': """
-            Locate pagination controls.
-            Look for:
-            1. Page numbers at the bottom
-            2. Next/Previous buttons
-            3. Numerical page indicators
-            Find all clickable page elements.
+            1. Blue button with "Search Employees" text
+            2. Located in company search results
+            3. Next to company information
+            Click the correct button for the matching domain.
         """
     }
     
@@ -171,7 +163,7 @@ class RocketReachAgent:
         }
 
     async def search_company(self, domain: str) -> List[Dict]:
-        """Search company by domain and extract matching contacts"""
+        """Search company by domain with enhanced zoom handling"""
         try:
             self.current_state['domain'] = domain
             await self.state_machine.transition('init_search')
@@ -188,8 +180,8 @@ class RocketReachAgent:
             # Click Search Employees for main result
             await self._click_search_employees()
             
-            # Set zoom to 50%
-            await self.page.evaluate('document.body.style.zoom = "50%"')
+            # Set zoom to 50% - New required step
+            await self._set_zoom_level(50)
             
             # Extract contacts across pages
             contacts = await self._extract_all_contacts()
@@ -212,6 +204,17 @@ class RocketReachAgent:
             logger.error(f"Company search failed: {str(e)}")
             await self._handle_error(e)
             return []
+        
+    async def _set_zoom_level(self, zoom_level: int):
+        """Set page zoom level"""
+        try:
+            await self.page.evaluate(
+                f'document.body.style.zoom = "{zoom_level}%"'
+            )
+            # Wait for zoom to take effect
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Failed to set zoom level: {str(e)}")
 
     async def _navigate_to_companies(self):
         """Navigate to companies search with vision guidance"""
@@ -254,13 +257,27 @@ class RocketReachAgent:
             return False
 
     async def _click_search_employees(self):
-        """Click Search Employees button with vision guidance"""
-        button_screenshot = await self.screenshot_pipeline.capture_optimized()
-        button_result = await self.vision_service.analyze_screenshot(
-            button_screenshot,
-            self.NAVIGATION_PROMPTS['search_employees']
-        )
-        await self._execute_action(button_result['next_action'])
+        """Click Search Employees with enhanced vision guidance"""
+        try:
+            # Take screenshot focused on search area
+            button_screenshot = await self.screenshot_pipeline.capture_optimized()
+            button_result = await self.vision_service.analyze_screenshot(
+                button_screenshot,
+                self.NAVIGATION_PROMPTS['search_employees']
+            )
+            
+            # Execute with validation
+            action_result = await self._execute_action(button_result['next_action'])
+            if not action_result:
+                raise AutomationError("Failed to click Search Employees")
+            
+            # Wait for navigation
+            await self.page.wait_for_load_state("networkidle")
+            
+        except Exception as e:
+            logger.error(f"Failed to click Search Employees: {str(e)}")
+            raise
+
 
     async def _extract_all_contacts(self) -> List[Dict]:
         """Extract matching contacts across multiple pages"""
@@ -297,16 +314,16 @@ class RocketReachAgent:
         return contacts[:self.max_results]
 
     async def _extract_page_contacts(self) -> List[Dict]:
-        """Extract matching contacts from current page"""
+        """Extract contacts from current page with enhanced validation"""
         contacts = []
-        
         try:
-            # Get all contact rows
             rows = await self.page.query_selector_all(".contact-row")
             
             for row in rows:
+                if len(contacts) >= self.max_results:
+                    break
+                    
                 try:
-                    # Get title first to filter quickly
                     title_element = await row.query_selector(".title")
                     if not title_element:
                         continue
@@ -315,13 +332,9 @@ class RocketReachAgent:
                     if not self._is_target_title(title):
                         continue
                     
-                    # Extract contact details
                     contact = await self._extract_contact_info(row)
                     if contact:
                         contacts.append(contact)
-                        
-                    if len(contacts) >= self.max_results:
-                        break
                         
                 except Exception as e:
                     logger.error(f"Contact extraction failed: {str(e)}")

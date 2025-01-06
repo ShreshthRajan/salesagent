@@ -26,7 +26,8 @@ class ApolloAutonomousAgent:
     TARGET_TITLES = {
         "Chief Executive Officer",
         "CEO",
-        "Chief Financial Officer",
+        "President",
+        "Chief Financial Officer", 
         "CFO",
         "Director of Finance",
         "Director of FP&A",
@@ -76,8 +77,9 @@ class ApolloAutonomousAgent:
         self.state_machine = state_machine
         self.validation_service = validation_service
         self.screenshot_pipeline = screenshot_pipeline
+        self.current_state['results_found'] = 0
         self.result_collector = result_collector
-        
+        self.max_results = 5
         # Enhanced state tracking
         self.current_state = {
             'company': None,
@@ -354,76 +356,87 @@ class ApolloAutonomousAgent:
             raise AutomationError(f"Failed to sort results: {str(e)}")
 
     async def _extract_matching_contacts(self) -> List[Dict]:
-        """Enhanced contact extraction with improved validation"""
-        try:
-            contacts = []
-            current_page = 1
-            has_more = True
-            
-            while has_more and current_page <= 10:  # Limit to 10 pages
-                try:
-                    # Wait for results to load
-                    await self.page.wait_for_load_state("networkidle", timeout=5000)
-                    
-                    # Get all contact rows
-                    rows = await self.page.query_selector_all("tr")
-                    
-                    for row in rows:
-                        try:
-                            # Extract title first to filter quickly
-                            title_element = await row.query_selector("td:nth-child(2)")
-                            if not title_element:
-                                continue
-                                
-                            title = await title_element.inner_text()
-                            if not self._is_target_title(title):
-                                continue
-                            
-                            # Now extract other fields
-                            name_element = await row.query_selector("td:nth-child(1)")
-                            if not name_element:
-                                continue
-                            
-                            name = await name_element.inner_text()
-                            
-                            # Get email button
-                            email_button = await row.query_selector("button:has-text('Access email')")
-                            if not email_button:
-                                continue
-                                
-                            # Click and wait for email reveal
-                            await email_button.click()
-                            await asyncio.sleep(0.5)  # Wait for reveal animation
-                            
-                            # Get revealed email
-                            email_element = await row.query_selector(".revealed-email")
-                            email = await email_element.inner_text() if email_element else None
-                            
-                            if name and title and email:
-                                contacts.append({
-                                    "name": name.strip(),
-                                    "title": title.strip(),
-                                    "email": email.strip(),
-                                    "confidence": 0.9
-                                })
-                            
-                        except Exception as row_error:
-                            logger.error(f"Row processing error: {str(row_error)}")
+        """Extract matching contacts with result limit"""
+        contacts = []
+        current_page = 1
+        
+        while (
+            current_page <= 10 and  # Keep existing page limit
+            len(contacts) < self.max_results  # New result limit
+        ):
+            try:
+                # Wait for results to load
+                await self.page.wait_for_load_state("networkidle")
+                
+                # Get all contact rows
+                rows = await self.page.query_selector_all("tr")
+                
+                for row in rows:
+                    # Break if we hit the result limit
+                    if len(contacts) >= self.max_results:
+                        break
+                        
+                    try:
+                        # Get title first to filter quickly
+                        title_element = await row.query_selector("td:nth-child(2)")
+                        if not title_element:
                             continue
-                    
-                    # Check for next page
-                    has_more = await self._go_to_next_page(current_page)
-                    current_page += 1
-                    
-                except Exception as page_error:
-                    logger.error(f"Page processing error: {str(page_error)}")
+                            
+                        title = await title_element.inner_text()
+                        if not self._is_target_title(title):
+                            continue
+                        
+                        # Now extract other fields
+                        name_element = await row.query_selector("td:nth-child(1)")
+                        if not name_element:
+                            continue
+                        
+                        name = await name_element.inner_text()
+                        
+                        # Updated email button selector
+                        email_button = await row.query_selector(
+                            'button:has-text("Access email")'
+                        )
+                        if not email_button:
+                            continue
+                            
+                        # Click and wait for email reveal
+                        await email_button.click()
+                        await asyncio.sleep(0.5)  # Wait for reveal animation
+                        
+                        # Updated revealed email selector
+                        email_element = await row.query_selector(".revealed-email")
+                        email = await email_element.inner_text() if email_element else None
+                        
+                        if name and title and email:
+                            contacts.append({
+                                "name": name.strip(),
+                                "title": title.strip(),
+                                "email": email.strip(),
+                                "confidence": 0.9
+                            })
+                            self.current_state['results_found'] += 1
+                        
+                    except Exception as row_error:
+                        logger.error(f"Row processing error: {str(row_error)}")
+                        continue
+                
+                # Check limits before pagination
+                if len(contacts) >= self.max_results:
                     break
-            
-            return contacts
-            
-        except Exception as e:
-            logger.error(f"Contact extraction failed: {str(e)}")
-            return []
+                    
+                # Try next page
+                if not await self._go_to_next_page(current_page):
+                    break
+                    
+                current_page += 1
+                self.current_state['page_number'] = current_page
+                
+            except Exception as page_error:
+                logger.error(f"Page processing error: {str(page_error)}")
+                break
+        
+        return contacts[:self.max_results]  # Ensure we don't exceed limit
 
     async def _extract_contact_info(self, row) -> Optional[Dict]:
         """Extract and validate contact information from a row"""
