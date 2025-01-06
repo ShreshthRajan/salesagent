@@ -273,6 +273,3 @@ async def cleanup_async():
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-
-
-        
