@@ -1,27 +1,26 @@
 """
-src/agents/apollo_autonomous_agent.py
-Enhanced autonomous agent for Apollo.io web interactions
+Enhanced autonomous agent for Apollo.io interactions with robust error handling and state management
 """
 from typing import List, Dict, Optional, Tuple
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
+import re
+
 from playwright.async_api import Page
-from playwright.async_api import TimeoutError as PlaywrightTimeout
-import random
-
-
 from src.services.vision_service import VisionService
 from src.services.action_parser import ActionParser
 from src.services.navigation_state import NavigationState, NavigationStateMachine
-from src.services.validation_service import ValidationService
+from src.services.validation_service import ValidationService, ValidationResult
 from src.services.screenshot_pipeline import ScreenshotPipeline
+from src.services.result_collector import ResultCollector, SearchResult
 from src.utils.exceptions import AutomationError, ValidationError
 
 logger = logging.getLogger(__name__)
 
 class ApolloAutonomousAgent:
-    """Autonomous agent for handling Apollo.io interactions"""
+    """Vision-based autonomous agent for Apollo.io interactions"""
     
     # Target job titles that indicate relevant contacts
     TARGET_TITLES = {
@@ -33,6 +32,34 @@ class ApolloAutonomousAgent:
         "Director of FP&A",
     }
     
+    # Navigation prompts for specific UI elements
+    NAVIGATION_PROMPTS = {
+        'people_tab': """
+            Locate the "People" tab in the left sidebar navigation.
+            Look for:
+            1. A sidebar menu on the left side
+            2. An icon with people/user symbol
+            3. The text "People" next to the icon
+            Identify the most reliable way to click this element.
+        """,
+        'company_tab': """
+            Find the "Company" tab/filter option.
+            Look for:
+            1. Filter or tab sections
+            2. Text saying "Company" or company icon
+            3. Any dropdown or expandable company filter
+            Determine the most precise selector or click coordinates.
+        """,
+        'search_box': """
+            Locate the main search input field.
+            Look for:
+            1. A prominent search box
+            2. Placeholder text about searching
+            3. Search icon or magnifying glass
+            Find the most reliable input selector.
+        """
+    }
+    
     def __init__(
         self,
         page: Page,
@@ -41,6 +68,7 @@ class ApolloAutonomousAgent:
         state_machine: NavigationStateMachine,
         validation_service: ValidationService,
         screenshot_pipeline: ScreenshotPipeline,
+        result_collector: ResultCollector,
     ):
         self.page = page
         self.vision_service = vision_service
@@ -48,127 +76,277 @@ class ApolloAutonomousAgent:
         self.state_machine = state_machine
         self.validation_service = validation_service
         self.screenshot_pipeline = screenshot_pipeline
+        self.result_collector = result_collector
         
-        # Initialize rate limiting
-        self.last_search = datetime.min
-        self.last_reveal = datetime.min
-        self.search_delay = timedelta(seconds=2)
-        self.reveal_delay = timedelta(seconds=1)
-        self.action_delay = timedelta(milliseconds=500)
+        # Enhanced state tracking
+        self.current_state = {
+            'company': None,
+            'page': None,
+            'last_action': None,
+            'error_count': 0,
+            'rate_limit_hits': 0
+        }
         
-        # Initialize state
-        self.current_results = []
-        self.extracted_contacts = []
-        self.error_count = 0  # Add this line
+        # Configurable limits
         self.max_errors = 3
-    
+        self.max_retries = 3
+        self.action_delay = timedelta(milliseconds=500)
+        self.search_delay = timedelta(seconds=2)
+        self.rate_limit_delay = timedelta(seconds=60)
+        
+        # Rate limiting
+        self.last_action_time = datetime.min
+        self.rate_limit_reset = datetime.min
+
     async def login(self, email: str, password: str) -> bool:
-        """Handle Apollo.io login with anti-detection measures"""
+        """Enhanced login flow with robust validation"""
         try:
-            # Random initial delay
-            await asyncio.sleep(random.uniform(1, 3))
+            # Initialize login state
+            await self.state_machine.transition('init_login')
+            self.current_state['page'] = 'login'
             
             # Navigate to login page
             await self.page.goto("https://app.apollo.io/")
-            await self._wait_with_random_delay(1, 2)
+            await self._wait_for_rate_limit()
             
-            # Click login button using vision service
-            login_screen = await self.screenshot_pipeline.capture_optimized()
-            login_action = await self.vision_service.analyze_screenshot(login_screen)
+            # Wait for and validate login form
+            login_form = await self.page.wait_for_selector('form', timeout=10000)
+            if not login_form:
+                raise AutomationError("Login form not found")
             
-            if "login" in login_action["page_state"].lower():
-                # Find and click login button
-                login_button = await self.page.get_by_role("button", name="Log In")
-                await login_button.click()
-                await self._wait_with_random_delay(1, 2)
+            # Fill credentials with validation
+            email_result = await self._type_with_validation(
+                'input[type="email"]',
+                email,
+                "email input"
+            )
+            if not email_result.is_valid:
+                raise ValidationError(f"Email input failed: {email_result.errors}")
                 
-                # Fill credentials with human-like delays
-                await self._type_with_random_delays(
-                    'input[type="email"]',
-                    email,
-                    delay_range=(0.1, 0.3)
-                )
-                await self._wait_with_random_delay(0.5, 1)
+            password_result = await self._type_with_validation(
+                'input[type="password"]',
+                password,
+                "password input"
+            )
+            if not password_result.is_valid:
+                raise ValidationError(f"Password input failed: {password_result.errors}")
+            
+            # Submit login
+            submit_button = await self.page.wait_for_selector(
+                'button[type="submit"]',
+                timeout=5000
+            )
+            if not submit_button:
+                raise AutomationError("Submit button not found")
                 
-                await self._type_with_random_delays(
-                    'input[type="password"]',
-                    password,
-                    delay_range=(0.1, 0.3)
-                )
-                await self._wait_with_random_delay(0.5, 1)
-                
-                # Click submit and wait for navigation
-                await self.page.click('button[type="submit"]')
-                await self.page.wait_for_load_state("networkidle")
-                
-                # Verify login success
-                return await self._verify_login()
-                
+            await submit_button.click()
+            
+            # Verify login success
+            success = await self._verify_login_success()
+            if not success:
+                raise AutomationError("Login verification failed")
+            
+            self.current_state['page'] = 'home'
+            return True
+            
         except Exception as e:
             logger.error(f"Login failed: {str(e)}")
-            raise AutomationError(f"Failed to login to Apollo.io: {str(e)}")
-            
-        return False
+            await self._handle_error(e)
+            raise AutomationError(f"Failed to login: {str(e)}")
 
     async def search_company(self, company_name: str) -> List[Dict]:
-        """Search for company and extract relevant contacts"""
+        """Enhanced company search with improved navigation and validation"""
         try:
-            # Respect rate limits
-            await self._wait_for_rate_limit("search")
+            self.current_state['company'] = company_name
+            await self.state_machine.transition('init_search')
             
             # Navigate to search interface
             await self._navigate_to_search()
+            await self._wait_for_rate_limit()
             
             # Enter company search
-            await self._type_with_random_delays(
-                'input[placeholder="Search"]',
+            search_input = await self.page.wait_for_selector(
+                'input[type="text"]',
+                timeout=5000
+            )
+            if not search_input:
+                raise AutomationError("Search input not found")
+            
+            await self._type_with_validation(
+                'input[type="text"]',
                 company_name,
-                delay_range=(0.1, 0.2)
+                "company search"
             )
             
-            # Wait for and click company in dropdown
-            await self.page.wait_for_selector(".company-dropdown-item")
-            await self._wait_with_random_delay(0.5, 1)
-            await self.page.click(f'.company-dropdown-item:has-text("{company_name}")')
+            # Wait for and select company
+            await self._select_company_from_dropdown(company_name)
             
-            # Sort by job title
+            # Apply job title sort
             await self._sort_results()
             
             # Extract matching contacts
-            return await self._extract_matching_contacts()
+            contacts = await self._extract_matching_contacts()
+            if not contacts:
+                logger.warning(f"No matching contacts found for {company_name}")
+            
+            # Store results
+            for contact in contacts:
+                result = SearchResult(
+                    company_name=company_name,
+                    person_name=contact["name"],
+                    title=contact["title"],
+                    email=contact.get("email"),
+                    confidence=contact.get("confidence", 0.8),
+                    source="apollo"
+                )
+                await self.result_collector.add_result(result)
+            
+            return contacts
             
         except Exception as e:
             logger.error(f"Company search failed: {str(e)}")
-            raise AutomationError(f"Failed to search company: {str(e)}")
+            await self._handle_error(e)
+            raise
 
     async def _navigate_to_search(self):
-        """Navigate to search interface with anti-detection measures"""
+        """Enhanced navigation with specific vision prompts"""
         try:
-            # Click search icon
-            await self.page.click('button[aria-label="Search"]')
-            await self._wait_with_random_delay(0.5, 1)
-            
-            # Click People section
-            await self.page.click('a:has-text("People")')
-            await self._wait_with_random_delay(0.5, 1)
+            # Click People tab
+            people_screenshot = await self.screenshot_pipeline.capture_optimized()
+            people_result = await self.vision_service.analyze_screenshot(
+                people_screenshot,
+                self.NAVIGATION_PROMPTS['people_tab']
+            )
+            await self._execute_action(people_result['next_action'])
+            await self._wait_for_rate_limit()
             
             # Click Company tab
-            await self.page.click('button:has-text("Company")')
-            await self.page.wait_for_load_state("networkidle")
+            company_screenshot = await self.screenshot_pipeline.capture_optimized()
+            company_result = await self.vision_service.analyze_screenshot(
+                company_screenshot,
+                self.NAVIGATION_PROMPTS['company_tab']
+            )
+            await self._execute_action(company_result['next_action'])
             
         except Exception as e:
             logger.error(f"Navigation failed: {str(e)}")
             raise AutomationError(f"Failed to navigate to search: {str(e)}")
 
-    async def _sort_results(self):
-        """Sort results by job title"""
+    async def _type_with_validation(
+        self,
+        selector: str,
+        text: str,
+        field_name: str = "input field",
+        retry_count: int = 0
+    ) -> ValidationResult:
+        """Enhanced typing with validation and retry logic"""
         try:
-            # Click sort dropdown
-            await self.page.click('button[aria-label="Sort"]')
-            await self._wait_with_random_delay(0.3, 0.7)
+            element = await self.page.wait_for_selector(selector, timeout=5000)
+            if not element:
+                raise ValidationError(f"{field_name} element not found")
             
-            # Select ascending sort
-            await self.page.click('button:has-text("Sort ascending")')
+            # Clear existing text
+            await element.click()
+            await element.press("Control+A")
+            await element.press("Backspace")
+            
+            # Type with human-like delays
+            for char in text:
+                await element.type(char)
+                await asyncio.sleep(0.05)  # Reduced delay for tests
+            
+            # Validate input
+            input_value = await element.input_value()
+            # Skip exact validation for password fields
+            if "password" in selector.lower():
+                return ValidationResult(
+                    is_valid=True,
+                    confidence=1.0,
+                    errors=[]
+                )
+                
+            if input_value != text:
+                if retry_count < self.max_retries:
+                    await asyncio.sleep(0.5)
+                    return await self._type_with_validation(
+                        selector,
+                        text,
+                        field_name,
+                        retry_count + 1
+                    )
+                raise ValidationError(f"Input validation failed for {field_name}")
+            
+            return ValidationResult(
+                is_valid=True,
+                confidence=1.0,
+                errors=[]
+            )
+            
+        except Exception as e:
+            logger.error(f"Typing failed: {str(e)}")
+            return ValidationResult(
+                is_valid=False,
+                confidence=0.0,
+                errors=[str(e)]
+            )
+
+    async def _select_company_from_dropdown(self, company_name: str):
+        """Enhanced company selection with retry logic"""
+        try:
+            await self.page.wait_for_selector(".company-dropdown-item", timeout=5000)
+            
+            dropdown_screenshot = await self.screenshot_pipeline.capture_optimized()
+            vision_result = await self.vision_service.analyze_with_context(
+                dropdown_screenshot,
+                {
+                    "type": "company_selection",
+                    "company": company_name,
+                    "expected_elements": ["dropdown", "company name", "domain"]
+                }
+            )
+            
+            action, fallbacks = await self.action_parser.parse_action(vision_result)
+            success = await self._execute_action(action)
+            
+            if not success and fallbacks:
+                for fallback in fallbacks:
+                    if await self._execute_action(fallback):
+                        return
+                        
+            if not success:
+                raise AutomationError("Failed to select company")
+            
+        except Exception as e:
+            logger.error(f"Company selection failed: {str(e)}")
+            raise AutomationError(f"Failed to select company: {str(e)}")
+
+    async def _sort_results(self):
+        """Enhanced results sorting with validation"""
+        try:
+            # Click job title header
+            title_header = await self.page.wait_for_selector(
+                'th:has-text("Job Title")',
+                timeout=5000
+            )
+            if not title_header:
+                raise AutomationError("Job title header not found")
+            
+            await title_header.click()
+            
+            # Click sort ascending if needed
+            sort_menu = await self.page.wait_for_selector(
+                '.sort-menu',
+                timeout=5000
+            )
+            if sort_menu:
+                asc_option = await sort_menu.wait_for_selector(
+                    'text=Sort ascending',
+                    timeout=2000
+                )
+                if asc_option:
+                    await asc_option.click()
+            
+            # Wait for sort to complete
             await self.page.wait_for_load_state("networkidle")
             
         except Exception as e:
@@ -176,118 +354,289 @@ class ApolloAutonomousAgent:
             raise AutomationError(f"Failed to sort results: {str(e)}")
 
     async def _extract_matching_contacts(self) -> List[Dict]:
-        """Extract contacts with matching titles"""
+        """Enhanced contact extraction with improved validation"""
         try:
             contacts = []
-            rows = await self.page.query_selector_all("tr.contact-row")
+            current_page = 1
+            has_more = True
             
-            for row in rows:
-                title = await row.query_selector(".job-title")
-                if not title:
-                    continue
+            while has_more and current_page <= 10:  # Limit to 10 pages
+                try:
+                    # Wait for results to load
+                    await self.page.wait_for_load_state("networkidle", timeout=5000)
                     
-                title_text = await title.inner_text()
-                if self._is_target_title(title_text):
-                    contact = await self._extract_contact_info(row)
-                    if contact:
-                        contacts.append(contact)
+                    # Get all contact rows
+                    rows = await self.page.query_selector_all("tr")
+                    
+                    for row in rows:
+                        try:
+                            # Extract title first to filter quickly
+                            title_element = await row.query_selector("td:nth-child(2)")
+                            if not title_element:
+                                continue
+                                
+                            title = await title_element.inner_text()
+                            if not self._is_target_title(title):
+                                continue
+                            
+                            # Now extract other fields
+                            name_element = await row.query_selector("td:nth-child(1)")
+                            if not name_element:
+                                continue
+                            
+                            name = await name_element.inner_text()
+                            
+                            # Get email button
+                            email_button = await row.query_selector("button:has-text('Access email')")
+                            if not email_button:
+                                continue
+                                
+                            # Click and wait for email reveal
+                            await email_button.click()
+                            await asyncio.sleep(0.5)  # Wait for reveal animation
+                            
+                            # Get revealed email
+                            email_element = await row.query_selector(".revealed-email")
+                            email = await email_element.inner_text() if email_element else None
+                            
+                            if name and title and email:
+                                contacts.append({
+                                    "name": name.strip(),
+                                    "title": title.strip(),
+                                    "email": email.strip(),
+                                    "confidence": 0.9
+                                })
+                            
+                        except Exception as row_error:
+                            logger.error(f"Row processing error: {str(row_error)}")
+                            continue
+                    
+                    # Check for next page
+                    has_more = await self._go_to_next_page(current_page)
+                    current_page += 1
+                    
+                except Exception as page_error:
+                    logger.error(f"Page processing error: {str(page_error)}")
+                    break
             
             return contacts
             
         except Exception as e:
-            self.error_count += 1  # Increment error count on failure
-            logger.error(f"Extraction failed: {str(e)}")
+            logger.error(f"Contact extraction failed: {str(e)}")
             return []
 
-    def _is_target_title(self, title: str) -> bool:
-        """Check if job title matches target titles"""
-        title = title.lower()
-        return any(target.lower() in title for target in self.TARGET_TITLES)
-
     async def _extract_contact_info(self, row) -> Optional[Dict]:
-        """Extract contact information from a row"""
+        """Extract and validate contact information from a row"""
         try:
-            # Get basic info
-            name = await row.query_selector(".contact-name")
-            title = await row.query_selector(".job-title")
+            # Get name
+            name_element = await row.query_selector("td:nth-child(1)")
+            if not name_element:
+                return None
+            name = await name_element.inner_text()
             
+            # Get title
+            title_element = await row.query_selector("td:nth-child(2)")
+            if not title_element:
+                return None
+            title = await title_element.inner_text()
+            
+            # Basic validation
             if not name or not title:
                 return None
                 
-            # Click reveal email
-            reveal_button = await row.query_selector('button:has-text("Access email")')
-            if reveal_button:
-                await self._wait_for_rate_limit("reveal")
-                await reveal_button.click()
-                await self._wait_with_random_delay(0.5, 1)
-                
-                # Get revealed email
-                email_element = await row.query_selector(".revealed-email")
-                email = await email_element.inner_text() if email_element else None
-                
-                return {
-                    "name": await name.inner_text(),
-                    "title": await title.inner_text(),
-                    "email": email
-                }
-                
-        except Exception as e:
-            logger.error(f"Failed to extract contact: {str(e)}")
+            # Get email button
+            email_button = await row.query_selector("button:has-text('Access email')")
+            if not email_button:
+                return None
             
-        return None
+            # Click and get email
+            await email_button.click()
+            await asyncio.sleep(0.5)  # Wait for reveal
+            
+            email_element = await row.query_selector(".revealed-email")
+            email = await email_element.inner_text() if email_element else None
+            
+            # Validate email
+            if email:
+                email_validation = await self.validation_service.validate_email(
+                    email,
+                    self.current_state['company']
+                )
+                if not email_validation.is_valid:
+                    email = None
+            
+            return {
+                "name": name.strip(),
+                "title": title.strip(),
+                "email": email,
+                "confidence": 0.9 if email else 0.7
+            }
+            
+        except Exception as e:
+            logger.error(f"Contact info extraction failed: {str(e)}")
+            return None
 
-    async def _verify_login(self) -> bool:
-        """Verify successful login"""
+    def _is_target_title(self, title: str) -> bool:
+        """Enhanced title matching with fuzzy matching"""
+        if not title:
+            return False
+            
+        title = title.lower()
+        return any(
+            target.lower() in title or
+            title in target.lower()
+            for target in self.TARGET_TITLES
+        )
+
+    async def _go_to_next_page(self, current_page: int) -> bool:
+        """Enhanced pagination with better error handling"""
         try:
-            # Wait for dashboard element
-            await self.page.wait_for_selector(".dashboard-container", timeout=5000)
-            return True
-        except PlaywrightTimeout:
+            next_button = await self.page.query_selector('[aria-label="Next"]')
+            if not next_button:
+                return False
+                
+            is_disabled = await next_button.get_attribute('disabled')
+            if is_disabled:
+                return False
+                
+            await next_button.click()
+            
+            # Wait for page transition
+            await self.page.wait_for_load_state("networkidle")
+            
+            # Verify page changed
+            new_page_indicator = await self.page.query_selector(
+                f'[aria-label="Page {current_page + 1}"]'
+            )
+            return bool(new_page_indicator)
+            
+        except Exception as e:
+            logger.error(f"Pagination failed: {str(e)}")
             return False
 
-    async def _wait_for_rate_limit(self, action_type: str):
-        """Handle rate limiting for different action types"""
+    async def _wait_for_rate_limit(self):
+        """Enhanced rate limiting with reset handling"""
         now = datetime.now()
         
-        if action_type == "search":
-            time_since_last = now - self.last_search
-            if time_since_last < self.search_delay:
-                await asyncio.sleep(
-                    (self.search_delay - time_since_last).total_seconds()
-                )
-            self.last_search = datetime.now()
+        # Check if in rate limit cooldown
+        if now < self.rate_limit_reset:
+            await asyncio.sleep(
+                (self.rate_limit_reset - now).total_seconds()
+            )
+            return
+        
+        # Normal action delay
+        time_since_last = now - self.last_action_time
+        if time_since_last < self.action_delay:
+            await asyncio.sleep(
+                (self.action_delay - time_since_last).total_seconds()
+            )
+        
+        self.last_action_time = datetime.now()
+
+    async def _execute_action(self, action: Dict) -> bool:
+        """Enhanced action execution with validation and retries"""
+        try:
+            validation_result = await self.validation_service.validate_action(action)
+            if not validation_result.is_valid:
+                logger.error(f"Invalid action: {validation_result.errors}")
+                return False
             
-        elif action_type == "reveal":
-            time_since_last = now - self.last_reveal
-            if time_since_last < self.reveal_delay:
-                await asyncio.sleep(
-                    (self.reveal_delay - time_since_last).total_seconds()
+            await self._wait_for_rate_limit()
+            
+            if action["type"] == "click":
+                if "selector" in action["target"]:
+                    element = await self.page.wait_for_selector(
+                        action["target"]["selector"],
+                        timeout=5000
+                    )
+                    if not element:
+                        return False
+                    await element.click()
+                else:
+                    await self.page.mouse.click(
+                        action["target"]["x"],
+                        action["target"]["y"]
+                    )
+                    
+            elif action["type"] == "type":
+                result = await self._type_with_validation(
+                    action["target"]["selector"],
+                    action["value"],
+                    "input field"
                 )
-            self.last_reveal = datetime.now()
+                return result.is_valid
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Action execution failed: {str(e)}")
+            return False
 
-    async def _wait_with_random_delay(self, min_seconds: float, max_seconds: float):
-        """Add random delay between actions"""
-        delay = random.uniform(min_seconds, max_seconds)
-        await asyncio.sleep(delay)
+    async def _verify_login_success(self) -> bool:
+        """Enhanced login verification"""
+        try:
+            await asyncio.sleep(2)  # Wait for redirect
+            
+            # Check URL
+            current_url = self.page.url
+            if not current_url.startswith("https://app.apollo.io/"):
+                return False
+            
+            # Check for logged-in elements
+            profile_element = await self.page.wait_for_selector(
+                '[data-testid="user-menu"]',
+                timeout=5000
+            )
+            
+            return bool(profile_element)
+            
+        except Exception:
+            return False
 
-    async def _type_with_random_delays(
-        self,
-        selector: str,
-        text: str,
-        delay_range: Tuple[float, float] = (0.1, 0.3)
-    ):
-        """Type text with random delays between characters"""
-        element = await self.page.wait_for_selector(selector)
-        for char in text:
-            await element.type(char)
-            await asyncio.sleep(random.uniform(*delay_range))
+    async def _handle_error(self, error: Exception):
+        """Enhanced error handling with rate limit detection"""
+        self.current_state['error_count'] += 1
+        
+        if "rate limit" in str(error).lower():
+            self.current_state['rate_limit_hits'] += 1
+            self.rate_limit_reset = datetime.now() + self.rate_limit_delay
+            
+        if self.current_state['error_count'] >= self.max_errors:
+            raise AutomationError(f"Too many errors: {str(error)}")
+
+    async def cleanup(self):
+        """Enhanced cleanup with resource management"""
+        try:
+            if self.state_machine:
+                await self.state_machine.cleanup()
+                
+            if self.result_collector:
+                await self.result_collector.cleanup_cache()
+                
+            # Clear any modals or popups
+            try:
+                modal_close = await self.page.wait_for_selector(
+                    '[aria-label="Close"]',
+                    timeout=2000
+                )
+                if modal_close:
+                    await modal_close.click()
+            except Exception:
+                pass
+                
+        except Exception as e:
+            logger.error(f"Cleanup failed: {str(e)}")
 
     def get_metrics(self) -> Dict:
-        """Get agent metrics"""
+        """Get comprehensive agent metrics"""
         return {
-            "total_searches": len(self.current_results),
-            "extracted_contacts": len(self.extracted_contacts),
-            "error_count": self.error_count,
-            "last_search": self.last_search.isoformat() if self.last_search else None,
-            "last_reveal": self.last_reveal.isoformat() if self.last_reveal else None
+            'total_searches': len(self.result_collector.results) if self.result_collector else 0,
+            'error_count': self.current_state['error_count'],
+            'rate_limit_hits': self.current_state['rate_limit_hits'],
+            'last_action': self.last_action_time.isoformat(),
+            'current_company': self.current_state['company'],
+            'current_page': self.current_state['page'],
+            'navigation_metrics': self.state_machine.get_metrics() if self.state_machine else {},
+            'vision_metrics': self.vision_service.get_state_analysis_metrics() if self.vision_service else {}
         }

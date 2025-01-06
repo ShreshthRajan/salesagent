@@ -143,6 +143,21 @@ class NavigationStateMachine:
             self.context.current_state = NavigationState.RETRYING
         else:
             self.context.current_state = NavigationState.COMPLETE
+   
+    async def _handle_state_transition(self, action_result: Dict) -> None:
+        current_state = self.context.current_state
+        
+        if current_state == NavigationState.INITIAL and action_result.get('success'):
+            self.context.current_state = NavigationState.SEARCHING
+            
+        elif current_state == NavigationState.SEARCHING and action_result.get('person_found'):
+            self.context.current_state = NavigationState.PERSON_FOUND
+            
+        elif current_state == NavigationState.PERSON_FOUND and action_result.get('email_found'):
+            await self._handle_email_found(action_result)
+            
+        elif current_state == NavigationState.COMPLETE and action_result.get('validation_success') is False:
+            self.context.current_state = NavigationState.RETRYING
 
     async def _handle_validating(self, action_result: Dict) -> None:
         """Handle validation state transitions"""
