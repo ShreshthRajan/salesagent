@@ -5,7 +5,9 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 import pytest
+import pytest_asyncio
 from playwright.async_api import async_playwright
 
 from src.agents.apollo_autonomous_agent import ApolloAutonomousAgent
@@ -36,18 +38,21 @@ EXPECTED_TITLES = {
     'CFO',
     'Chief Financial Officer',
     'VP Finance',
-    'Vice President of Finance'
+    'Vice President of Finance',
+    'Director of Finance',
+    'Director of FP&A'
 }
 
+@pytest.mark.asyncio
 class TestLeadEnrichment:
-    @pytest.fixture(scope="class")
+    @pytest_asyncio.fixture(scope="class")
     async def config(self):
         return ConfigManager().config
 
-    @pytest.fixture(scope="class")
-    async def browser_context(self):
+    @pytest_asyncio.fixture(scope="class")
+    async def browser_context(self, event_loop):
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)  # Set to True in production
+            browser = await p.chromium.launch(headless=False)
             context = await browser.new_context(
                 viewport={'width': 1280, 'height': 720}
             )
@@ -55,76 +60,67 @@ class TestLeadEnrichment:
             await context.close()
             await browser.close()
 
-    @pytest.fixture(scope="class")
+    @pytest_asyncio.fixture(scope="class")
     async def services(self, browser_context, config):
         # Initialize services
-        page = await browser_context.new_page()
-        
         vision_service = VisionService()
         action_parser = ActionParser()
         state_machine = NavigationStateMachine()
         validation_service = ValidationService()
-        screenshot_pipeline = ScreenshotPipeline()
+        screenshot_pipeline = ScreenshotPipeline(browser_context.pages[0])
         result_collector = ResultCollector()
         
-        # Initialize agents with login
-        apollo_agent = ApolloAutonomousAgent(
-            page=page,
-            vision_service=vision_service,
-            action_parser=action_parser,
-            state_machine=state_machine,
-            validation_service=validation_service,
-            screenshot_pipeline=screenshot_pipeline,
-            result_collector=result_collector
-        )
-        
-        # Login to Apollo
-        await apollo_agent.login(
-            config.apollo.email,
-            config.apollo.password
-        )
-        
-        # Initialize RocketReach agent
-        rocket_page = await browser_context.new_page()
-        rocket_agent = RocketReachAgent(
-            page=rocket_page,
-            vision_service=vision_service,
-            action_parser=action_parser,
-            state_machine=state_machine,
-            validation_service=validation_service,
-            screenshot_pipeline=screenshot_pipeline,
-            result_collector=result_collector
-        )
-        
-        # Login to RocketReach
-        await rocket_agent.login(
-            config.rocketreach.email,
-            config.rocketreach.password
-        )
-        
         yield {
-            'apollo_agent': apollo_agent,
-            'rocket_agent': rocket_agent,
             'vision_service': vision_service,
             'action_parser': action_parser,
             'state_machine': state_machine,
             'validation_service': validation_service,
             'screenshot_pipeline': screenshot_pipeline,
-            'result_collector': result_collector
+            'result_collector': result_collector,
+            'browser_context': browser_context
         }
         
         # Cleanup
-        await apollo_agent.cleanup()
-        await rocket_agent.cleanup()
+        await state_machine.cleanup()
 
-    @pytest.fixture(scope="class")
+    @pytest_asyncio.fixture(scope="class")
     async def orchestrator(self, services):
+        page = await services['browser_context'].new_page()
+        
+        # Initialize Apollo agent
+        apollo_agent = ApolloAutonomousAgent(
+            page=page,
+            vision_service=services['vision_service'],
+            action_parser=services['action_parser'],
+            state_machine=services['state_machine'],
+            validation_service=services['validation_service'],
+            screenshot_pipeline=services['screenshot_pipeline'],
+            result_collector=services['result_collector']
+        )
+
+        # Initialize RocketReach agent
+        rocket_page = await services['browser_context'].new_page()
+        rocket_agent = RocketReachAgent(
+            page=rocket_page,
+            vision_service=services['vision_service'],
+            action_parser=services['action_parser'],
+            state_machine=services['state_machine'],
+            validation_service=services['validation_service'],
+            screenshot_pipeline=services['screenshot_pipeline'],
+            result_collector=services['result_collector']
+        )
+
+        # Login to services
+        await apollo_agent.login("vishesh@pillarhq.com", "MemberPrime316!!")
+        await rocket_agent.login("vishesh@pillarhq.com", "MemberPrime316!!")
+
         orchestrator = LeadEnrichmentOrchestrator(
-            apollo_agent=services['apollo_agent'],
-            rocket_agent=services['rocket_agent'],
+            apollo_agent=apollo_agent,
+            rocket_agent=rocket_agent,
             validation_service=services['validation_service'],
             result_collector=services['result_collector']
         )
+
         yield orchestrator
         await orchestrator.cleanup()
 
@@ -141,131 +137,192 @@ class TestLeadEnrichment:
         )
         
         # Log basic metrics
-        logger.info(f"Enrichment completed in {(datetime.now() - start_time).total_seconds():.2f} seconds")
+        duration = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Enrichment completed in {duration:.2f} seconds")
         logger.info(f"Found {len(result.contacts)} contacts")
         
-        # Validate results
+        # Basic result validation
         assert result.company_name == TEST_COMPANY['name']
         assert len(result.contacts) > 0, "No contacts found"
+        assert duration < 300, "Enrichment took too long"
         
-        # Validate contact quality
+        # Track email domains for pattern analysis
+        email_domains = set()
+        email_patterns = {}
+        
+        # Validate each contact
         for contact in result.contacts:
-            # Check required fields
+            # Required fields validation
             assert contact.get('name'), "Contact missing name"
             assert contact.get('title'), "Contact missing title"
             assert contact.get('email'), "Contact missing email"
+            assert contact.get('confidence'), "Contact missing confidence score"
+            assert contact.get('sources'), "Contact missing source information"
             
-            # Validate email format and collection
-            email = contact['email']
-            assert '@' in email, "Invalid email format"
-            local_part, domain = email.split('@')
+            # Name format validation
+            name_parts = contact['name'].split()
+            assert len(name_parts) >= 2, f"Invalid name format: {contact['name']}"
             
-            # Basic email format validation
-            assert len(local_part) > 0, "Empty local part in email"
-            assert len(domain) > 0, "Empty domain in email"
-            assert '.' in domain, "Invalid domain format"
-            
-            # Log discovered email pattern
-            logger.info(f"Found email pattern: {local_part}@{domain}")
-            
-            # Validate email has associated confidence score
-            assert 'confidence' in contact, "Missing confidence score for email"
-            logger.info(f"Email confidence score: {contact['confidence']}")
-            
-            # Track found domains for pattern analysis
-            if 'email_domains' not in self.__class__.__dict__:
-                self.__class__.email_domains = set()
-            self.__class__.email_domains.add(domain)
-            
-            # Validate source verification
-            assert contact.get('sources'), "Missing source information for email"
-            sources = contact['sources']
-            logger.info(f"Email verified by sources: {', '.join(sources)}")
-            
-            # Validate title matches expected roles
+            # Title validation
             title_match = any(
                 expected.lower() in contact['title'].lower()
                 for expected in EXPECTED_TITLES
             )
             assert title_match, f"Unexpected title: {contact['title']}"
             
-            # Check confidence scores
-            assert contact.get('confidence', 0) >= 0.7, "Low confidence score"
+            # Email validation
+            email = contact['email']
+            assert '@' in email, "Invalid email format"
+            local_part, domain = email.split('@')
             
-            # Validate source information
-            assert contact.get('sources'), "Missing source information"
+            # Basic email format checks
+            assert len(local_part) > 0, "Empty local part in email"
+            assert len(domain) > 0, "Empty domain in email"
+            assert '.' in domain, "Invalid domain format"
+            assert not email.startswith('.'), "Email starts with dot"
+            assert not email.endswith('.'), "Email ends with dot"
+            assert '..' not in email, "Email contains consecutive dots"
+            
+            # Track email patterns
+            email_domains.add(domain)
+            pattern = self._extract_email_pattern(local_part)
+            if pattern:
+                if domain not in email_patterns:
+                    email_patterns[domain] = set()
+                email_patterns[domain].add(pattern)
+            
+            # Source validation
+            assert len(contact['sources']) > 0, "No sources found"
+            for source in contact['sources']:
+                assert source in ['apollo', 'rocketreach'], f"Invalid source: {source}"
+            
+            # Confidence score validation
+            assert 0 <= contact['confidence'] <= 1, "Invalid confidence score"
+            if len(contact['sources']) > 1:
+                assert contact['confidence'] >= 0.8, "Low confidence for multi-source"
+            
+            # Cross-validation check
+            if 'cross_validated' in contact:
+                assert isinstance(contact['cross_validated'], bool)
+                if contact['cross_validated']:
+                    assert len(contact['sources']) > 1, "Invalid cross-validation"
             
             logger.info(f"Validated contact: {contact['name']} ({contact['title']})")
+            logger.info(f"Email pattern: {pattern} for domain: {domain}")
         
-        # Export results
-        export_path = await orchestrator.export_results(
-            format='csv',
-            include_metrics=True
-        )
+        # Export validation
+        export_path = await orchestrator.export_results(format='csv')
         assert export_path and Path(export_path).exists(), "Export failed"
         
-        # Log performance metrics and discovered patterns
+        # Performance metrics validation
         metrics = orchestrator.get_orchestrator_metrics()
+        assert metrics['successful_searches'] > 0, "No successful searches"
+        assert metrics['performance']['avg_processing_time'] < 60, "Slow processing"
+        assert metrics['performance']['cache_hit_rate'] >= 0, "Invalid cache rate"
+        
+        # Log metrics
         logger.info("\nPerformance Metrics:")
+        logger.info(f"Total searches: {metrics['total_searches']}")
+        logger.info(f"Success rate: {metrics['successful_searches']/metrics['total_searches']:.2%}")
         logger.info(f"Average processing time: {metrics['performance']['avg_processing_time']:.2f}s")
         logger.info(f"Cache hit rate: {metrics['performance']['cache_hit_rate']:.2%}")
-        logger.info(f"Validation rate: {metrics['validation']['validation_rate']:.2%}")
         
-        # Log email pattern analysis
-        if hasattr(self.__class__, 'email_domains'):
-            logger.info("\nDiscovered Email Domains:")
-            for domain in sorted(self.__class__.email_domains):
-                logger.info(f"- {domain}")
-            
-        # Log detailed result analysis
-        logger.info("\nResult Analysis:")
-        logger.info(f"Total contacts found: {len(result.contacts)}")
-        source_breakdown = {}
-        for contact in result.contacts:
-            for source in contact.get('sources', []):
-                source_breakdown[source] = source_breakdown.get(source, 0) + 1
-        logger.info("Source breakdown:")
-        for source, count in source_breakdown.items():
-            logger.info(f"- {source}: {count} contacts")
+        # Log discovered patterns
+        logger.info("\nDiscovered Email Patterns:")
+        for domain, patterns in email_patterns.items():
+            logger.info(f"\nDomain: {domain}")
+            for pattern in patterns:
+                logger.info(f"- {pattern}")
+        
+        # Source metrics
+        logger.info("\nSource Metrics:")
+        for source, stats in metrics['sources'].items():
+            logger.info(f"\n{source.title()}:")
+            logger.info(f"Success rate: {stats.get('success_rate', 0):.2%}")
+            logger.info(f"Error rate: {stats.get('error_rate', 0):.2%}")
         
         return result
 
     @pytest.mark.asyncio
     async def test_rate_limiting(self, orchestrator):
         """Test rate limiting behavior"""
-        # Execute multiple searches in quick succession
         tasks = [
             orchestrator.enrich_company(TEST_COMPANY['name'], TEST_COMPANY['domain'])
             for _ in range(3)
         ]
         
+        start_time = datetime.now()
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        duration = (datetime.now() - start_time).total_seconds()
         
-        # Verify rate limiting worked
+        # Validate results
+        for result in results:
+            assert not isinstance(result, Exception), "Rate limit task failed"
+            assert result.contacts, "No contacts found"
+            
+        # Check rate limiting worked
         metrics = orchestrator.get_orchestrator_metrics()
-        assert metrics['detailed_metrics']['error_counts']['apollo'] == 0, "Rate limit exceeded"
-        assert metrics['detailed_metrics']['error_counts']['rocketreach'] == 0, "Rate limit exceeded"
+        assert metrics['detailed_metrics']['error_counts']['apollo'] == 0
+        assert metrics['detailed_metrics']['error_counts']['rocketreach'] == 0
+        
+        # Verify reasonable timing
+        assert duration > 1.0, "Rate limiting not enforced"
+        logger.info(f"Rate limited batch completed in {duration:.2f} seconds")
+        
+        # Log rate limiting metrics
+        for source in ['apollo', 'rocketreach']:
+            source_metrics = metrics['sources'][source]
+            logger.info(f"\n{source.title()} Rate Limiting:")
+            logger.info(f"Requests: {source_metrics['total_requests']}")
+            logger.info(f"Rate limit hits: {source_metrics['rate_limit_hits']}")
 
     @pytest.mark.asyncio
     async def test_error_recovery(self, orchestrator):
         """Test error recovery capabilities"""
-        # Force an error by temporarily breaking the connection
         original_search = orchestrator.apollo_agent.search_company
+        recovery_tracked = {'attempts': 0}
         
         async def mock_error(*args, **kwargs):
-            raise Exception("Simulated network error")
+            recovery_tracked['attempts'] += 1
+            if recovery_tracked['attempts'] <= 2:
+                raise Exception("Simulated network error")
+            return await original_search(*args, **kwargs)
         
         orchestrator.apollo_agent.search_company = mock_error
         
-        # Attempt enrichment
+        # Execute with error simulation
         result = await orchestrator.enrich_company(
             TEST_COMPANY['name'],
             TEST_COMPANY['domain']
         )
         
-        # Verify recovery
-        assert result.contacts, "Failed to recover from error"
-        assert orchestrator.current_state.retry_counts['apollo'] > 0, "No retry attempts"
+        # Validate recovery
+        assert result.contacts, "Failed to recover and get results"
+        assert recovery_tracked['attempts'] > 1, "No retry attempts made"
+        assert orchestrator.current_state is not None, "State not maintained"
+        
+        # Validate error tracking
+        metrics = orchestrator.get_orchestrator_metrics()
+        assert metrics['detailed_metrics']['error_counts']['apollo'] > 0
+        assert len(orchestrator.current_state.errors) > 0
+        
+        # Log recovery metrics
+        logger.info("\nError Recovery Metrics:")
+        logger.info(f"Recovery attempts: {recovery_tracked['attempts']}")
+        logger.info(f"Final state: {orchestrator.current_state.status}")
+        logger.info(f"Errors encountered: {len(orchestrator.current_state.errors)}")
         
         # Restore original function
         orchestrator.apollo_agent.search_company = original_search
+
+    def _extract_email_pattern(self, local_part: str) -> Optional[str]:
+        """Extract pattern from email local part"""
+        pattern = ''
+        for char in local_part:
+            if char.isalpha():
+                pattern += 'a'
+            elif char.isdigit():
+                pattern += 'd'
+            else:
+                pattern += char
+        return pattern

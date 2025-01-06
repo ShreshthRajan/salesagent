@@ -1,4 +1,4 @@
-# tests/conftest.py
+# src/tests/conftest.py
 import sys
 from mock import patch 
 import pytest
@@ -19,13 +19,12 @@ from src.utils.config import Config
 
 load_dotenv()
 
-pytestmark = pytest.mark.asyncio
-
-@pytest.fixture(scope="function")
+# Change scope to "class" to match test class fixtures
+@pytest.fixture(scope="class")
 def event_loop_policy():
     return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == 'win32' else asyncio.DefaultEventLoopPolicy()
 
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture(scope="class")
 async def event_loop(event_loop_policy):
     policy = event_loop_policy
     loop = policy.new_event_loop()
@@ -34,14 +33,19 @@ async def event_loop(event_loop_policy):
     loop.close()
     asyncio.set_event_loop(None)
 
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture(scope="class")
+async def event_loop():
+    """Create and yield an event loop for each test class"""
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
+
+    
+@pytest_asyncio.fixture(scope="class")
 async def cleanup_tasks():
     yield
-    # Get all tasks from the current event loop
     loop = asyncio.get_event_loop()
     tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
-    
-    # Cancel all tasks
     for task in tasks:
         task.cancel()
         try:
@@ -49,90 +53,67 @@ async def cleanup_tasks():
         except asyncio.CancelledError:
             pass
 
-@pytest.fixture
-async def browser_context():
+@pytest_asyncio.fixture(scope="class")
+async def browser_context(event_loop):
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        context = await browser.new_context()
+        browser = await p.chromium.launch(headless=False)  # Set to true for production
+        context = await browser.new_context(
+            viewport={'width': 1280, 'height': 720}
+        )
         yield context
         await context.close()
         await browser.close()
 
-@pytest.fixture
-async def mock_page(browser_context):
-    page = await browser_context.new_page()
-    yield page
-    await page.close()
-
-@pytest.fixture
-def screenshot_manager(mock_page):
-    return ScreenshotManager(mock_page)
-
-@pytest.fixture
-def vision_service():
-    service = VisionService()
-    service.api_key = "test_key"
-    return service
-
-@pytest.fixture
-def action_parser():
-    return ActionParser()
-
-@pytest.fixture
-async def navigation_state(cleanup_tasks):
-    state = NavigationStateMachine()
-    yield state
-    await state.cleanup()
-
-@pytest.fixture
-def validation_service():
-    return ValidationService()
-
-@pytest.fixture
-def integration_manager(mock_page, vision_service, action_parser, navigation_state, 
-                       validation_service, screenshot_manager):
-    return IntegrationManager(
-        mock_page,
-        vision_service,
-        action_parser,
-        navigation_state,
-        validation_service,
-        screenshot_manager
-    )
-
-@pytest.fixture
-def mock_config():
-    from src.utils.config import Config, ApiConfigs, OpenAIConfig, APIConfig, BrowserConfig, ProxyConfig, LoggingConfig
-    
+@pytest_asyncio.fixture(scope="class")
+async def mock_config():
     return Config(
         api=ApiConfigs(
-            apollo=APIConfig(base_url="", rate_limit=0),
-            rocketreach=APIConfig(base_url="", rate_limit=0),
-            openai=OpenAIConfig()
+            apollo=APIConfig(
+                base_url="https://app.apollo.io",
+                rate_limit=100
+            ),
+            rocketreach=APIConfig(
+                base_url="https://rocketreach.co",
+                rate_limit=50
+            ),
+            openai=OpenAIConfig(
+                base_url="https://api.openai.com/v1",
+                rate_limit=50,
+                model="gpt-4-vision-preview",
+                temperature=0.1
+            )
         ),
-        browser=BrowserConfig(max_concurrent=5, timeout=30000, retry_attempts=3),
-        proxies=ProxyConfig(rotation_interval=300, max_failures=3),
-        logging=LoggingConfig(level="INFO", format="json")
+        browser=BrowserConfig(
+            max_concurrent=5,
+            timeout=30000,
+            retry_attempts=3
+        ),
+        proxies=ProxyConfig(
+            rotation_interval=300,
+            max_failures=3
+        ),
+        logging=LoggingConfig(
+            level="INFO",
+            format="json"
+        )
     )
 
-@pytest.fixture
-def vision_service(mock_config):
-    service = VisionService()
-    service.config = mock_config
-    return service
+@pytest_asyncio.fixture(scope="class")
+async def services(browser_context, mock_config):
+    vision_service = VisionService()
+    action_parser = ActionParser()
+    state_machine = NavigationStateMachine()
+    validation_service = ValidationService()
+    screenshot_manager = ScreenshotManager(browser_context.pages[0])
+    
+    yield {
+        'vision_service': vision_service,
+        'action_parser': action_parser,
+        'state_machine': state_machine,
+        'validation_service': validation_service,
+        'screenshot_manager': screenshot_manager,
+        'browser_context': browser_context
+    }
 
-@pytest.fixture(autouse=True)
-def mock_config_manager():
-    with patch('src.utils.config.ConfigManager') as mock:
-        instance = mock.return_value
-        instance.config = Config(
-            api=ApiConfigs(
-                apollo=APIConfig(base_url="", rate_limit=0),
-                rocketreach=APIConfig(base_url="", rate_limit=0),
-                openai=OpenAIConfig()
-            ),
-            browser=BrowserConfig(),
-            proxies=ProxyConfig(),
-            logging=LoggingConfig()
-        )
-        yield mock
+    # Cleanup
+    await state_machine.cleanup()

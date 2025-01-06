@@ -2,6 +2,13 @@ class SalesAgentException(Exception):
     """Base exception for sales agent"""
     pass
 
+class OrchestrationError(SalesAgentException):
+    """Raised when orchestration operations fail"""
+    def __init__(self, message: str = None):
+        self.message = message or "Orchestration operation failed"
+        super().__init__(self.message)
+
+        
 class ConfigurationError(SalesAgentException):
     """Raised when configuration is invalid"""
     pass
@@ -82,12 +89,6 @@ class VisionAPIError(Exception):
     """Raised when there are issues with the Vision API service"""
     def __init__(self, message: str = None):
         self.message = message or "Vision API operation failed"
-        super().__init__(self.message)
-        
-class BrowserException(Exception):
-    """Base exception class for browser-related errors"""
-    def __init__(self, message: str = None):
-        self.message = message or "Browser operation failed"
         super().__init__(self.message)
 
 class InvalidActionError(BrowserException):
