@@ -271,6 +271,5 @@ async def cleanup_async():
     # Cancel them
     for task in tasks:
         task.cancel()
-    # Wait until all tasks are cancelled
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
