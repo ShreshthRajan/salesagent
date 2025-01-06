@@ -71,25 +71,27 @@ class ApolloAutonomousAgent:
         screenshot_pipeline: ScreenshotPipeline,
         result_collector: ResultCollector,
     ):
+        # Initialize state first
+        self.current_state = {
+            'company': None,
+            'page': None,
+            'last_action': None,
+            'error_count': 0,
+            'rate_limit_hits': 0,
+            'results_found': 0
+        }
+        
+        # Service assignments
         self.page = page
         self.vision_service = vision_service
         self.action_parser = action_parser
         self.state_machine = state_machine
         self.validation_service = validation_service
         self.screenshot_pipeline = screenshot_pipeline
-        self.current_state['results_found'] = 0
         self.result_collector = result_collector
-        self.max_results = 5
-        # Enhanced state tracking
-        self.current_state = {
-            'company': None,
-            'page': None,
-            'last_action': None,
-            'error_count': 0,
-            'rate_limit_hits': 0
-        }
         
         # Configurable limits
+        self.max_results = 5
         self.max_errors = 3
         self.max_retries = 3
         self.action_delay = timedelta(milliseconds=500)
@@ -101,61 +103,116 @@ class ApolloAutonomousAgent:
         self.rate_limit_reset = datetime.min
 
     async def login(self, email: str, password: str) -> bool:
-        """Enhanced login flow with robust validation"""
+        """Enhanced login flow with navigation and state management"""
         try:
-            # Initialize login state
-            await self.state_machine.transition('init_login')
-            self.current_state['page'] = 'login'
+            # Initialize navigation context
+            await self.state_machine.initialize_search('apollo', 'login')
+            self.state['page'] = 'login'
             
             # Navigate to login page
-            await self.page.goto("https://app.apollo.io/")
-            await self._wait_for_rate_limit()
+            try:
+                await self.page.goto("https://app.apollo.io/#/login", 
+                                wait_until='networkidle',
+                                timeout=30000)
+                await self.page.wait_for_load_state('domcontentloaded')
+            except Exception as e:
+                raise AutomationError(f"Navigation failed: {str(e)}")
+
+            # Wait for Apollo.io logo to confirm page load
+            await self.page.wait_for_selector('img[alt="Apollo.io"]')
             
-            # Wait for and validate login form
-            login_form = await self.page.wait_for_selector('form', timeout=10000)
-            if not login_form:
-                raise AutomationError("Login form not found")
+            # Wait for email field using Work Email placeholder
+            email_input = await self.page.wait_for_selector('input[placeholder="Work Email"]', timeout=10000)
+            if not email_input:
+                raise AutomationError("Email input not found")
+            await email_input.fill(email)
             
-            # Fill credentials with validation
-            email_result = await self._type_with_validation(
-                'input[type="email"]',
-                email,
-                "email input"
-            )
-            if not email_result.is_valid:
-                raise ValidationError(f"Email input failed: {email_result.errors}")
-                
-            password_result = await self._type_with_validation(
-                'input[type="password"]',
-                password,
-                "password input"
-            )
-            if not password_result.is_valid:
-                raise ValidationError(f"Password input failed: {password_result.errors}")
+            # Wait for password field using the correct placeholder
+            password_input = await self.page.wait_for_selector('input[placeholder="Enter your password"]', timeout=10000)
+            if not password_input:
+                raise AutomationError("Password input not found")
+            await password_input.fill(password)
             
-            # Submit login
-            submit_button = await self.page.wait_for_selector(
-                'button[type="submit"]',
-                timeout=5000
-            )
-            if not submit_button:
-                raise AutomationError("Submit button not found")
-                
-            await submit_button.click()
+            # Click the Log In button using exact text
+            login_button = await self.page.wait_for_selector('button:has-text("Log In")', timeout=10000)
+            if not login_button:
+                raise AutomationError("Login button not found")
+            await login_button.click()
+            
+            # Wait for successful login redirection
+            try:
+                await self.page.wait_for_navigation(timeout=30000)
+                await self.page.wait_for_load_state('networkidle')
+            except Exception as e:
+                raise AutomationError(f"Navigation after login failed: {str(e)}")
             
             # Verify login success
             success = await self._verify_login_success()
             if not success:
                 raise AutomationError("Login verification failed")
-            
-            self.current_state['page'] = 'home'
+                
+            self.state['page'] = 'home'
             return True
-            
+                
         except Exception as e:
             logger.error(f"Login failed: {str(e)}")
             await self._handle_error(e)
             raise AutomationError(f"Failed to login: {str(e)}")
 
+    async def _verify_login_success(self) -> bool:
+        """Enhanced login verification"""
+        try:
+            await asyncio.sleep(2)  # Wait for redirect
+            
+            # Check URL
+            current_url = self.page.url
+            if not current_url.startswith("https://app.apollo.io/"):
+                return False
+            
+            # Try multiple selectors that indicate successful login
+            success_selectors = [
+                '[data-testid="user-menu"]',  # Primary selector
+                '.user-profile',              # Backup selector
+                'button:has-text("Power-ups")',  # Another indicator of logged-in state
+                '.apollo-nav-menu'            # Main navigation menu
+            ]
+            
+            for selector in success_selectors:
+                try:
+                    element = await self.page.wait_for_selector(selector, timeout=5000)
+                    if element:
+                        return True
+                except Exception:
+                    continue
+                    
+            return False
+                
+        except Exception as e:
+            logger.error(f"Login verification failed: {str(e)}")
+            return False
+
+    def _validate_state(self) -> bool:
+        """Validate that state is properly initialized"""
+        required_fields = {
+            'company', 'page', 'last_action', 
+            'error_count', 'rate_limit_hits', 'results_found'
+        }
+        return all(field in self.current_state for field in required_fields)
+
+    @property
+    def state(self) -> dict:
+        """Safe state access with validation"""
+        if not hasattr(self, 'current_state'):
+            self.current_state = {
+                'company': None,
+                'page': None,
+                'last_action': None,
+                'error_count': 0,
+                'rate_limit_hits': 0,
+                'results_found': 0
+            }
+        return self.current_state
+    
     async def search_company(self, company_name: str) -> List[Dict]:
         """Enhanced company search with improved navigation and validation"""
         try:
@@ -595,16 +652,32 @@ class ApolloAutonomousAgent:
             current_url = self.page.url
             if not current_url.startswith("https://app.apollo.io/"):
                 return False
-            
+                
             # Check for logged-in elements
-            profile_element = await self.page.wait_for_selector(
-                '[data-testid="user-menu"]',
-                timeout=5000
-            )
+            try:
+                profile_element = await self.page.wait_for_selector(
+                    '[data-testid="user-menu"]',
+                    timeout=5000
+                )
+                return bool(profile_element)
+            except Exception:
+                # Try alternative selectors if the first one fails
+                selectors = [
+                    '.user-profile',
+                    '.user-avatar',
+                    '.logged-in-indicator'
+                ]
+                for selector in selectors:
+                    try:
+                        element = await self.page.wait_for_selector(selector, timeout=2000)
+                        if element:
+                            return True
+                    except Exception:
+                        continue
+                return False
             
-            return bool(profile_element)
-            
-        except Exception:
+        except Exception as e:
+            logger.error(f"Login verification failed: {str(e)}")
             return False
 
     async def _handle_error(self, error: Exception):

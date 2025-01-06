@@ -3,10 +3,12 @@ credentials:
     email: "vishesh@pillarhq.com"
     password: "MemberPrime316!!"
     base_url: "https://app.apollo.io"
+    api_key: "${APOLLO_API_KEY}"  # Added API key reference
   rocketreach:
     email: "vishesh@pillarhq.com" 
     password: "MemberPrime316!!"
     base_url: "https://rocketreach.co"
+    api_key: "${ROCKETREACH_API_KEY}"  # Added API key reference
 
 browser:
   max_concurrent: 5
@@ -19,12 +21,21 @@ browser:
   headless: false  # For testing, set to true in production
 
 api:
+  apollo:
+    base_url: "https://app.apollo.io"
+    rate_limit: 100
+    api_key: "${APOLLO_API_KEY}"
+  rocketreach:
+    base_url: "https://rocketreach.co"
+    rate_limit: 50
+    api_key: "${ROCKETREACH_API_KEY}"
   openai:
     base_url: "https://api.openai.com/v1"
     rate_limit: 50
-    model: "gpt-4-vision-preview"  # Changed to vision model
+    model: "gpt-4-vision-preview"
     temperature: 0.1
     max_tokens: 500
+    api_key: "${OPENAI_API_KEY}"
 
 screenshots:
   cache_dir: "cache/screenshots"

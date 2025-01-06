@@ -60,6 +60,7 @@ class RocketReachAgent:
         """
     }
     
+
     def __init__(
         self,
         page: Page,
@@ -70,15 +71,7 @@ class RocketReachAgent:
         screenshot_pipeline: ScreenshotPipeline,
         result_collector: ResultCollector,
     ):
-        self.page = page
-        self.vision_service = vision_service
-        self.action_parser = action_parser
-        self.state_machine = state_machine
-        self.validation_service = validation_service
-        self.screenshot_pipeline = screenshot_pipeline
-        self.result_collector = result_collector
-        
-        # State tracking
+        # Initialize state first
         self.current_state = {
             'company': None,
             'domain': None,
@@ -88,6 +81,15 @@ class RocketReachAgent:
             'error_count': 0,
             'rate_limit_hits': 0
         }
+        
+        # Service assignments
+        self.page = page
+        self.vision_service = vision_service
+        self.action_parser = action_parser
+        self.state_machine = state_machine
+        self.validation_service = validation_service
+        self.screenshot_pipeline = screenshot_pipeline
+        self.result_collector = result_collector
         
         # Configurable limits
         self.max_retries = 3
@@ -102,18 +104,30 @@ class RocketReachAgent:
         self.element_timeout = 5000
 
     async def login(self, email: str, password: str) -> bool:
-        """Login to RocketReach with vision-based validation"""
+        """Login to RocketReach with enhanced navigation handling"""
         try:
-            await self.state_machine.transition('init_login')
-            await self.page.goto("https://rocketreach.co/")
+            # Initialize navigation context
+            await self.state_machine.initialize_search('rocketreach', 'login')
+            self.state['page'] = 'login'
             
-            # Click login button
-            login_screenshot = await self.screenshot_pipeline.capture_optimized()
-            login_result = await self.vision_service.analyze_screenshot(
-                login_screenshot,
-                "Find and click the login button in the top navigation."
+            # Navigate to homepage first
+            try:
+                await self.page.goto("https://rocketreach.co/",
+                                wait_until='networkidle',
+                                timeout=30000)
+            except Exception as e:
+                raise AutomationError(f"Navigation failed: {str(e)}")
+            
+            # Click login button to reach login page
+            login_button = await self.page.wait_for_selector(
+                'a:text("Login")', 
+                timeout=5000
             )
-            await self._execute_action(login_result['next_action'])
+            if not login_button:
+                raise AutomationError("Login button not found")
+                
+            await login_button.click()
+            await self.page.wait_for_load_state('networkidle')
             
             # Fill credentials
             email_result = await self._type_with_validation(
@@ -123,7 +137,7 @@ class RocketReachAgent:
             )
             if not email_result.is_valid:
                 raise ValidationError(f"Email input failed: {email_result.errors}")
-                
+                    
             password_result = await self._type_with_validation(
                 'input[type="password"]',
                 password,
@@ -139,12 +153,18 @@ class RocketReachAgent:
             )
             await login_button.click()
             
-            # Verify login success
-            await self.page.wait_for_selector(
-                '[data-testid="user-menu"]',
-                timeout=self.page_load_timeout
-            )
+            # Wait for navigation and verify
+            try:
+                await self.page.wait_for_navigation(timeout=30000)
+                await self.page.wait_for_load_state('networkidle')
+            except Exception as e:
+                raise AutomationError(f"Navigation after login failed: {str(e)}")
             
+            # Verify login success
+            if not await self._verify_login_success():
+                raise AutomationError("Login verification failed")
+                
+            self.state['page'] = 'home'
             return True
             
         except Exception as e:
@@ -162,6 +182,28 @@ class RocketReachAgent:
             'pages_processed': self.current_state['page_number']
         }
 
+    def _validate_state(self) -> bool:
+        """Validate that state is properly initialized"""
+        required_fields = {
+            'company', 'page', 'last_action', 
+            'error_count', 'rate_limit_hits', 'results_found'
+        }
+        return all(field in self.current_state for field in required_fields)
+
+    @property
+    def state(self) -> dict:
+        """Safe state access with validation"""
+        if not hasattr(self, 'current_state'):
+            self.current_state = {
+                'company': None,
+                'page': None,
+                'last_action': None,
+                'error_count': 0,
+                'rate_limit_hits': 0,
+                'results_found': 0
+            }
+        return self.current_state
+    
     async def search_company(self, domain: str) -> List[Dict]:
         """Search company by domain with enhanced zoom handling"""
         try:
@@ -592,3 +634,35 @@ class RocketReachAgent:
             
         except Exception as e:
             logger.error(f"Cleanup failed: {str(e)}")
+
+    async def _verify_login_success(self) -> bool:
+        """Enhanced login verification for RocketReach"""
+        try:
+            await asyncio.sleep(2)  # Wait for redirect
+            
+            # Check URL
+            current_url = self.page.url
+            if not current_url.startswith("https://rocketreach.co/"):
+                return False
+                
+            # Check for logged-in elements
+            selectors = [
+                '[data-testid="user-menu"]',
+                '.user-profile',
+                '.logged-in',
+                'button:has-text("Get Contact Info")'  # Unique to logged-in state
+            ]
+            
+            for selector in selectors:
+                try:
+                    element = await self.page.wait_for_selector(selector, timeout=2000)
+                    if element:
+                        return True
+                except Exception:
+                    continue
+                    
+            return False
+            
+        except Exception as e:
+            logger.error(f"Login verification failed: {str(e)}")
+            return False

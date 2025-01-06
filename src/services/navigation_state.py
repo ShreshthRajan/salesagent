@@ -58,56 +58,39 @@ class NavigationStateMachine:
             NavigationState.COMPLETE: self._handle_complete
         }
 
-    async def cleanup(self):
-        """Cleanup any running tasks"""
-        if self.timeout_monitor:
-            self.timeout_monitor.cancel()
-            try:
-                await self.timeout_monitor
-            except asyncio.CancelledError:
-                pass
-            
-        if self.context and self.context.parallel_tasks:
-            for task in self.context.parallel_tasks.values():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+    async def cleanup(self) -> None:
+        """Cleanup state machine resources"""
+        if hasattr(self, 'context') and self.context:
+            self.context.cleanup_required = True
+            if self.context.parallel_tasks:
+                for task in self.context.parallel_tasks.values():
+                    if not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
 
-    async def initialize_search(self, company: str, role: str) -> NavigationContext:
-        """Initialize new search with monitoring"""
-        if hasattr(self, 'cleanup'):
-            await self.cleanup()
-            self.context = NavigationContext(
-                current_state=NavigationState.INITIAL,
-                target_company=company,
-                target_role=role
-            )
-            
-            # Start timeout monitor
-            self.timeout_monitor = asyncio.create_task(self._monitor_timeout())
-            
-            # Initialize parallel validation
-            self.context.parallel_tasks['validation'] = asyncio.create_task(
-                self._continuous_validation()
-            )
-            
-            await self._save_state()
-            return self.context
+    async def initialize_search(self, source: str, stage: str) -> None:
+        """Initialize search state"""
+        self.current_state = NavigationState.INITIAL
+        self.context = NavigationContext(
+            current_state=self.current_state,
+            target_company=source,  # Use source as company for initialization
+            target_role=stage,      # Use stage for tracking
+            start_time=datetime.now()
+        )
 
     async def transition(self, action_result: Dict) -> NavigationContext:
-        """Handle state transition with parallel task management"""
-        if not self.context:
-            raise NavigationError("Navigation context not initialized")
-
-        # Update state based on action result
-        handler = self.state_transitions.get(self.context.current_state)
-        if handler:
-            await handler(action_result)
-            
-        await self._save_state()
-        return self.context
+            """Handle state transition with validation"""
+            if not hasattr(self, 'context') or not self.context:
+                await self.initialize_search('unknown', 'unknown')
+                
+            handler = self.state_transitions.get(self.context.current_state)
+            if handler:
+                await handler(action_result)
+                
+            return self.context
 
     async def _handle_initial(self, action_result: Dict) -> None:
         """Handle initial state transitions"""
