@@ -1,20 +1,35 @@
-api:
+credentials:
   apollo:
-    base_url: "https://api.apollo.io/api/v1"
-    rate_limit: 100  # requests per minute
+    email: "vishesh@pillarhq.com"
+    password: "MemberPrime316!!"
+    base_url: "https://app.apollo.io"
   rocketreach:
-    base_url: "https://api.rocketreach.co/v2"
-    rate_limit: 50
-  openai:
-    base_url: "https://api.openai.com/v1"
-    rate_limit: 50
-    model: "gpt-4-1106-preview"
-    temperature: 0.1
+    email: "vishesh@pillarhq.com" 
+    password: "MemberPrime316!!"
+    base_url: "https://rocketreach.co"
 
 browser:
   max_concurrent: 5
   timeout: 30000  # ms
   retry_attempts: 3
+  viewport:
+    width: 1280
+    height: 720
+  zoom_level: 50  # Required for RocketReach
+  headless: false  # For testing, set to true in production
+
+api:
+  openai:
+    base_url: "https://api.openai.com/v1"
+    rate_limit: 50
+    model: "gpt-4-vision-preview"  # Changed to vision model
+    temperature: 0.1
+    max_tokens: 500
+
+screenshots:
+  cache_dir: "cache/screenshots"
+  quality: 85
+  max_dimension: 1920
 
 proxies:
   rotation_interval: 300  # seconds
@@ -23,3 +38,9 @@ proxies:
 logging:
   level: "INFO"
   format: "json"
+  dir: "logs/screenshots"
+
+validation:
+  confidence_threshold: 0.7
+  cross_validation_required: true
+  cache_ttl: 86400  # 24 hours in seconds
